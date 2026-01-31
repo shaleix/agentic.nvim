@@ -5,7 +5,8 @@ root = true
 charset = utf-8
 indent_style = space
 indent_size = 2
-insert_final_newline = true
+# Set to false to avoid neovim + prettier race conditions (needs further investigation)
+insert_final_newline = false
 trim_trailing_whitespace = true
 end_of_line = lf
 

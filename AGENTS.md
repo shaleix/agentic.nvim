@@ -659,19 +659,19 @@ plugin.
 
 #### ACP Providers (Agent Client Protocol)
 
-These providers spawn **external CLI tools** as subprocesses and communicate via
-the Agent Client Protocol:
+This plugin spawn **external CLI tools** as subprocesses and communicate via the
+Agent Client Protocol:
 
-- **Requirements**: External CLI tools must be installed
-  - `npm i -g @zed-industries/claude-code-acp` or
-    `brew install --cask claude-code` or
-    `curl -fsSL https://claude.ai/install.sh | bash`
-  - `npm i -g @google/gemini-cli` or `brew install --cask gemini`
-  - `npm i -g @zed-industries/codex-acp` or `brew install --cask codex` or
-    download from releases
-  - `npm i -g opencode-ai` or `brew install opencode` or
-    `curl -fsSL https://opencode.ai/install | bash`
-  - `npm i -g @blowmage/cursor-agent-acp`
+- **Requirements**: External CLI tools must be installed by the user, we don't
+  install them for security reasons.
+  - `claude-code-acp` for Claude
+  - `gemini` for Gemini
+  - `codex-acp` for Codex
+  - `opencode` for OpenCode
+  - `cursor-agent-acp` for Cursor Agent
+  - `auggie` for Augment Code
+
+NOTE: Install instructs are in the README.md
 
 ##### Provider adapters:
 
@@ -713,6 +713,8 @@ acp_providers = {
 }
 ```
 
+#### ACP Protocol Documentation and schema
+
 The ACP documentation can be found at:
 
 - Complete Schema: https://agentclientprotocol.com/protocol/schema.md
@@ -730,7 +732,7 @@ The ACP documentation can be found at:
 - Extensibility: https://agentclientprotocol.com/protocol/extensibility.md
 - Transports: https://agentclientprotocol.com/protocol/transports.md
 
-##### ACP architectural limitations:
+#### ACP architectural limitations:
 
 - **No partial acceptance of file changes:** Users must accept or reject the
   entire file's changes as a unit. The ACP protocol is async and transactional
