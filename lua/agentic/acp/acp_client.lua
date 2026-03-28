@@ -30,8 +30,10 @@ local KNOWN_ACP_KINDS = {
 --- @field capabilities agentic.acp.ClientCapabilities
 --- @field agent_capabilities? agentic.acp.AgentCapabilities
 --- @field agent_info? agentic.acp.AgentInfo
+--- @field auth_methods agentic.acp.AuthMethod[]
 --- @field callbacks table<number, fun(result: table|nil, err: agentic.acp.ACPError|nil)>
 --- @field transport? agentic.acp.ACPTransportInstance
+--- @field ready_listeners fun(client: agentic.acp.ACPClient)[]
 --- @field subscribers table<string, agentic.acp.ClientHandlers>
 
 --- @class agentic.acp.ACPClient : agentic.acp.ACPClientData
@@ -52,7 +54,7 @@ ACPClient.ERROR_CODES = {
 
 --- @param config agentic.acp.ACPProviderConfig
 --- @param on_ready fun(client: agentic.acp.ACPClient)
---- @return agentic.acp.ACPClient
+--- @return agentic.acp.ACPClient client
 function ACPClient:new(config, on_ready)
     --- @type agentic.acp.ACPClientData
     local instance = {
@@ -71,6 +73,8 @@ function ACPClient:new(config, on_ready)
             },
             terminal = false,
         },
+        auth_methods = {},
+        ready_listeners = {},
         callbacks = {},
         transport = nil,
         state = "disconnected",
@@ -78,11 +82,30 @@ function ACPClient:new(config, on_ready)
     }
 
     local client = setmetatable(instance, self) --[[@as agentic.acp.ACPClient]]
-    client._on_ready = on_ready
+    client._on_ready = function(c)
+        on_ready(c)
+        for _, listener in ipairs(c.ready_listeners) do
+            vim.schedule(function()
+                listener(c)
+            end)
+        end
+        c.ready_listeners = {}
+    end
 
     client:_setup_transport()
     client:_connect()
     return client
+end
+
+--- @param callback fun(client: agentic.acp.ACPClient)
+function ACPClient:when_ready(callback)
+    if self.state == "ready" then
+        vim.schedule(function()
+            callback(self)
+        end)
+    else
+        self.ready_listeners[#self.ready_listeners + 1] = callback
+    end
 end
 
 --- @param session_id string
@@ -157,7 +180,7 @@ end
 --- @param code number
 --- @param message string
 --- @param data any|nil
---- @return agentic.acp.ACPError
+--- @return agentic.acp.ACPError error
 function ACPClient:__create_error(code, message, data)
     return {
         code = code,
@@ -166,7 +189,7 @@ function ACPClient:__create_error(code, message, data)
     }
 end
 
---- @return number
+--- @return number id
 function ACPClient:_next_id()
     self.id_counter = self.id_counter + 1
     return self.id_counter
@@ -212,7 +235,6 @@ end
 --- @protected
 --- @param id number
 --- @param result table | string | vim.NIL | nil
---- @return nil
 function ACPClient:__send_result(id, result)
     local message = { jsonrpc = "2.0", id = id, result = result }
 
@@ -298,11 +320,6 @@ function ACPClient:__handle_session_update(params)
 
     local session_update_type = update.sessionUpdate
 
-    if session_update_type == "user_message_chunk" then
-        -- Ignore user message chunks, Agentic writes its own user messages and these can cause duplication
-        return
-    end
-
     if session_update_type == "tool_call" then
         update.kind = update.kind or "other"
         update.status = update.status or "pending"
@@ -360,7 +377,7 @@ function ACPClient:__build_tool_call_message(update)
         message.status = update.status
     end
 
-    if update.title then
+    if update.title and update.title ~= "" then
         message.argument = update.title
     end
 
@@ -526,10 +543,16 @@ function ACPClient:_connect()
             return
         end
 
+        --- @cast result agentic.acp.InitializeResponse
         self.protocol_version = result.protocolVersion
         self.agent_capabilities = result.agentCapabilities
         self.agent_info = result.agentInfo
-        self.auth_methods = result.authMethods or {}
+
+        local auth_methods = result.authMethods
+        if type(auth_methods) ~= "table" or auth_methods == vim.NIL then
+            auth_methods = {}
+        end
+        self.auth_methods = auth_methods
 
         -- Check if we need to authenticate
         local auth_method = self.provider_config.auth_method
@@ -603,13 +626,26 @@ end
 --- @param cwd string
 --- @param mcp_servers table[]|nil
 --- @param handlers agentic.acp.ClientHandlers
-function ACPClient:load_session(session_id, cwd, mcp_servers, handlers)
-    --FIXIT: check if it's possible to ignore this check and just try to send load message
-    -- handle the response error properly also
+--- @param on_load_complete fun(err: agentic.acp.ACPError|nil)|nil
+function ACPClient:load_session(
+    session_id,
+    cwd,
+    mcp_servers,
+    handlers,
+    on_load_complete
+)
     if
         not self.agent_capabilities or not self.agent_capabilities.loadSession
     then
         Logger.notify("Agent does not support loading sessions")
+        if on_load_complete then
+            on_load_complete(
+                self:__create_error(
+                    -1,
+                    "Agent does not support loading sessions"
+                )
+            )
+        end
         return
     end
 
@@ -619,8 +655,58 @@ function ACPClient:load_session(session_id, cwd, mcp_servers, handlers)
         sessionId = session_id,
         cwd = cwd,
         mcpServers = mcp_servers or {},
-    }, function()
-        -- no-op
+    }, function(_result, err)
+        if err then
+            -- Avoid dangling subscribers if there are errors
+            self.subscribers[session_id] = nil
+        end
+
+        if on_load_complete then
+            on_load_complete(err)
+        end
+    end)
+end
+
+--- @param cwd string
+--- @param callback fun(result: agentic.acp.SessionListResponse|nil, err: agentic.acp.ACPError|nil)
+function ACPClient:list_sessions(cwd, callback)
+    local caps = self.agent_capabilities
+    if
+        not caps
+        or not caps.sessionCapabilities
+        or not caps.sessionCapabilities.list
+    then
+        callback(
+            nil,
+            self:__create_error(
+                self.ERROR_CODES.PROTOCOL_ERROR,
+                "Agent does not support listing sessions"
+            )
+        )
+        return
+    end
+
+    self:_send_request("session/list", {
+        cwd = cwd,
+    }, function(result, err)
+        if err then
+            callback(nil, err)
+            return
+        end
+
+        if type(result) ~= "table" or not result.sessions then
+            callback(
+                nil,
+                self:__create_error(
+                    self.ERROR_CODES.PROTOCOL_ERROR,
+                    "Malformed session/list response: missing sessions field"
+                )
+            )
+            return
+        end
+
+        --- @cast result agentic.acp.SessionListResponse
+        callback(result, nil)
     end)
 end
 
@@ -710,7 +796,7 @@ function ACPClient:cancel_session(session_id)
     })
 end
 
---- @return boolean
+--- @return boolean connected
 function ACPClient:is_connected()
     return self.state ~= "disconnected" and self.state ~= "error"
 end

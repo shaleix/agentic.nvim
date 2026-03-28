@@ -42,13 +42,16 @@ local NS_STATUS = vim.api.nvim_create_namespace("agentic_status_footer")
 --- @field tool_call_blocks table<string, agentic.ui.MessageWriter.ToolCallBlock>
 --- @field _last_message_type? string
 --- @field _should_auto_scroll? boolean
---- @field _scroll_scheduled? boolean
+--- @field _scroll_scheduled boolean
 --- @field _on_content_changed? fun()
+--- @field _last_sender? "user"|"agent"
+--- @field _provider_name? string
+--- @field _is_restoring boolean
 local MessageWriter = {}
 MessageWriter.__index = MessageWriter
 
 --- @param bufnr integer
---- @return agentic.ui.MessageWriter
+--- @return agentic.ui.MessageWriter instance
 function MessageWriter:new(bufnr)
     if not vim.api.nvim_buf_is_valid(bufnr) then
         error("Invalid buffer number: " .. tostring(bufnr))
@@ -60,6 +63,7 @@ function MessageWriter:new(bufnr)
         _last_message_type = nil,
         _should_auto_scroll = nil,
         _scroll_scheduled = false,
+        _is_restoring = false,
     }, self)
 
     return instance
@@ -68,6 +72,27 @@ end
 --- @param callback fun()|nil
 function MessageWriter:set_on_content_changed(callback)
     self._on_content_changed = callback
+end
+
+--- @param name string
+function MessageWriter:set_provider_name(name)
+    self._provider_name = name
+end
+
+--- Resets sender tracking so the next message writes a fresh header
+function MessageWriter:reset_sender_tracking()
+    self._last_sender = nil
+end
+
+--- Writes a structural message (e.g. welcome banner) without triggering
+--- a sender header. Resets sender tracking after so the next real message
+--- gets its own header.
+--- @param update agentic.acp.SessionUpdateMessage
+function MessageWriter:write_structural_message(update)
+    local saved = self._last_sender
+    self._last_sender = "user"
+    self:write_message(update)
+    self._last_sender = saved
 end
 
 function MessageWriter:_notify_content_changed()
@@ -87,7 +112,63 @@ function MessageWriter:_with_modifiable_and_notify_change(fn)
     end
 end
 
---- Writes a full message to the chat buffer and append two blank lines after
+--- @type table<string, "user"|"agent">
+local SENDER_MAP = {
+    user_message_chunk = "user",
+    agent_message_chunk = "agent",
+    agent_thought_chunk = "agent",
+    tool_call = "agent",
+}
+
+--- Writes a sender header to the buffer if the sender changed
+--- @param session_update_type string
+--- @return boolean header_written
+function MessageWriter:_maybe_write_sender_header(session_update_type)
+    if session_update_type == "plan" then
+        return false
+    end
+
+    local sender = SENDER_MAP[session_update_type] or "agent"
+
+    if sender == self._last_sender then
+        return false
+    end
+
+    self._last_sender = sender
+
+    local icons = Config.chat_icons or {}
+    local header = ""
+
+    if sender == "user" then
+        local icon = icons.user or ""
+        header = string.format("## %s User", icon)
+
+        if not self._is_restoring then
+            header =
+                string.format("%s - %s", header, os.date("%Y-%m-%d %H:%M:%S"))
+        end
+    else
+        local icon = icons.agent or ""
+        local name = self._provider_name or "unknown"
+        header = string.format("### %s Agent - %s", icon, name)
+    end
+
+    self:_with_modifiable_and_notify_change(function()
+        self:_append_lines({ "", header, "" })
+    end)
+
+    return true
+end
+
+--- Writes a message during session restore (suppresses timestamp in user header)
+--- @param update agentic.acp.SessionUpdateMessage
+function MessageWriter:write_restoring_message(update)
+    self._is_restoring = true
+    self:write_message(update)
+    self._is_restoring = false
+end
+
+--- Writes a full message to the chat buffer and appends a trailing blank line
 --- @param update agentic.acp.SessionUpdateMessage
 function MessageWriter:write_message(update)
     local text = update.content
@@ -98,13 +179,14 @@ function MessageWriter:write_message(update)
         return
     end
 
-    local lines = vim.split(text, "\n", { plain = true })
-
     self:_auto_scroll(self.bufnr)
+    self:_maybe_write_sender_header(update.sessionUpdate)
+
+    local lines = vim.split(text, "\n", { plain = true })
 
     self:_with_modifiable_and_notify_change(function()
         self:_append_lines(lines)
-        self:_append_lines({ "", "" })
+        self:_append_lines({ "" })
     end)
 end
 
@@ -120,7 +202,15 @@ function MessageWriter:write_message_chunk(update)
         return
     end
 
-    if
+    self:_auto_scroll(self.bufnr)
+
+    local header_written = self:_maybe_write_sender_header(update.sessionUpdate)
+
+    if header_written then
+        -- The header's trailing blank line will be consumed by set_text below,
+        -- so prepend a newline to preserve spacing after the header
+        text = "\n" .. text
+    elseif
         self._last_message_type == "agent_thought_chunk"
         and update.sessionUpdate == "agent_message_chunk"
     then
@@ -130,8 +220,6 @@ function MessageWriter:write_message_chunk(update)
     end
 
     self._last_message_type = update.sessionUpdate
-
-    self:_auto_scroll(self.bufnr)
 
     self:_with_modifiable_and_notify_change(function(bufnr)
         local last_line = vim.api.nvim_buf_line_count(bufnr) - 1
@@ -163,7 +251,6 @@ function MessageWriter:write_message_chunk(update)
 end
 
 --- @param lines string[]
---- @return nil
 function MessageWriter:_append_lines(lines)
     local start_line = BufHelpers.is_buffer_empty(self.bufnr) and 0 or -1
 
@@ -182,7 +269,7 @@ function MessageWriter:_append_lines(lines)
 end
 
 --- @param bufnr integer
---- @return boolean
+--- @return boolean should_scroll
 function MessageWriter:_check_auto_scroll(bufnr)
     local wins = vim.fn.win_findbuf(bufnr)
     if #wins == 0 then
@@ -234,6 +321,7 @@ end
 --- @param tool_call_block agentic.ui.MessageWriter.ToolCallBlock
 function MessageWriter:write_tool_call_block(tool_call_block)
     self:_auto_scroll(self.bufnr)
+    self:_maybe_write_sender_header("tool_call")
 
     self:_with_modifiable_and_notify_change(function(bufnr)
         local kind = tool_call_block.kind
@@ -582,6 +670,7 @@ function MessageWriter:_prepare_block_lines(tool_call_block)
 end
 
 --- Display permission request buttons at the end of the buffer
+--- @param tool_call_id string
 --- @param options agentic.acp.PermissionOption[]
 --- @return integer button_start_row Start row of button block
 --- @return integer button_end_row End row of button block

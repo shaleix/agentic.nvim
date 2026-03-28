@@ -120,6 +120,10 @@
 --- @field reject_once string
 --- @field reject_always string
 
+--- @class agentic.UserConfig.ChatIcons
+--- @field user string
+--- @field agent string
+
 --- @class agentic.UserConfig.FilePicker
 --- @field enabled boolean
 
@@ -144,9 +148,6 @@
 --- @class agentic.UserConfig.Settings
 --- @field move_cursor_to_chat_on_submit boolean Automatically move cursor to chat window after submitting a prompt
 
---- @class agentic.UserConfig.SessionRestore
---- @field storage_path? string Path to store session data; if nil, default path is used: ~/.cache/nvim/agentic/sessions/
-
 --- All the user config configurable options are optional
 --- @class agentic.PartialUserConfig
 --- @field debug? boolean Enable printing debug messages which can be read via `:messages`
@@ -158,6 +159,7 @@
 --- @field status_icons? agentic.UserConfig.StatusIcons
 --- @field diagnostic_icons? agentic.UserConfig.DiagnosticIcons
 --- @field permission_icons? agentic.UserConfig.PermissionIcons
+--- @field chat_icons? agentic.UserConfig.ChatIcons
 --- @field file_picker? agentic.UserConfig.FilePicker
 --- @field image_paste? agentic.UserConfig.ImagePaste
 --- @field auto_scroll? agentic.UserConfig.AutoScroll
@@ -165,8 +167,6 @@
 --- @field hooks? agentic.UserConfig.Hooks
 --- @field headers? agentic.UserConfig.Headers
 --- @field settings? agentic.UserConfig.Settings
---- @field session_restore? agentic.UserConfig.SessionRestore
-
 --- @class agentic.UserConfig
 --- @field debug boolean Enable printing debug messages which can be read via `:messages`
 --- @field provider agentic.UserConfig.ProviderName
@@ -177,6 +177,7 @@
 --- @field status_icons agentic.UserConfig.StatusIcons
 --- @field diagnostic_icons agentic.UserConfig.DiagnosticIcons
 --- @field permission_icons agentic.UserConfig.PermissionIcons
+--- @field chat_icons agentic.UserConfig.ChatIcons
 --- @field file_picker agentic.UserConfig.FilePicker
 --- @field image_paste agentic.UserConfig.ImagePaste
 --- @field auto_scroll agentic.UserConfig.AutoScroll
@@ -184,7 +185,6 @@
 --- @field hooks agentic.UserConfig.Hooks
 --- @field headers agentic.UserConfig.Headers
 --- @field settings agentic.UserConfig.Settings
---- @field session_restore agentic.UserConfig.SessionRestore
 local ConfigDefault = {
     debug = false,
 
@@ -372,6 +372,11 @@ local ConfigDefault = {
         reject_always = "󰜺",
     },
 
+    chat_icons = {
+        user = " ",
+        agent = "󱚠 ",
+    },
+
     file_picker = {
         enabled = true,
     },
@@ -400,10 +405,6 @@ local ConfigDefault = {
 
     settings = {
         move_cursor_to_chat_on_submit = true,
-    },
-
-    session_restore = {
-        storage_path = nil,
     },
 }
 

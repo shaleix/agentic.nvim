@@ -61,20 +61,27 @@ end
 --- @field todo_list agentic.ui.TodoList
 --- @field chat_history agentic.ui.ChatHistory
 --- @field _history_to_send? agentic.ui.ChatHistory.Message[] Messages to prepend on next prompt submit
---- @field _restoring boolean Flag to prevent auto-new_session during restore
+--- @field _is_restoring_session boolean Whether a session is being loaded from history
 local SessionManager = {}
 SessionManager.__index = SessionManager
 
 --- @param provider_name string
 --- @param session_id string|nil
 --- @param version string|nil
+--- @param timestamp string|integer|nil Formatted string, unix timestamp, or nil for now
 --- @return string header
 function SessionManager._generate_welcome_header(
     provider_name,
     session_id,
-    version
+    version,
+    timestamp
 )
-    local timestamp = os.date("%Y-%m-%d %H:%M:%S")
+    local date_str
+    if type(timestamp) == "string" then
+        date_str = timestamp
+    else
+        date_str = os.date("%Y-%m-%d %H:%M:%S", timestamp)
+    end
     local name = provider_name
     if version then
         name = name .. " v" .. version
@@ -83,7 +90,7 @@ function SessionManager._generate_welcome_header(
         "# Agentic - %s\n- session id: %s\n- %s\n--- --",
         name,
         session_id or "unknown",
-        timestamp
+        date_str
     )
 end
 
@@ -105,15 +112,12 @@ function SessionManager:new(tab_page_id)
         tab_page_id = tab_page_id,
         _is_first_message = true,
         is_generating = false,
-        _restoring = false,
+        _is_restoring_session = false,
     }, self)
 
     local agent = AgentInstance.get_instance(Config.provider, function(_client)
         vim.schedule(function()
-            -- Skip auto-new_session if restore_from_history was called
-            if not self._restoring then
-                self:new_session()
-            end
+            self:new_session()
         end)
     end)
 
@@ -131,6 +135,7 @@ function SessionManager:new(tab_page_id)
     end)
 
     self.message_writer = MessageWriter:new(self.widget.buf_nrs.chat)
+    self.message_writer:set_provider_name(self.agent.provider_config.name)
     self.status_animation = StatusAnimation:new(self.widget.buf_nrs.chat)
     self.permission_manager = PermissionManager:new(self.message_writer)
 
@@ -203,9 +208,24 @@ end
 
 --- @param update agentic.acp.SessionUpdateMessage
 function SessionManager:_on_session_update(update)
-    -- order the IF blocks in order of likeliness to be called for performance
-
-    if update.sessionUpdate == "plan" then
+    if update.sessionUpdate == "user_message_chunk" then
+        if self._is_restoring_session then
+            local text = update.content
+                and update.content.type == "text"
+                and update.content.text
+            if text and text ~= "" then
+                self.message_writer:write_restoring_message(
+                    ACPPayloads.generate_user_message(text)
+                )
+                self.chat_history:add_message({
+                    type = "user",
+                    text = text,
+                    timestamp = os.time(),
+                    provider_name = self.agent.provider_config.name,
+                })
+            end
+        end
+    elseif update.sessionUpdate == "plan" then
         if Config.windows.todos.display then
             self.todo_list:render(update.entries)
         end
@@ -489,11 +509,8 @@ function SessionManager:_handle_input_submit(input_text)
     end
 
     --- The message to be written to the chat widget
-    local message_lines = {
-        string.format("##  User - %s", os.date("%Y-%m-%d %H:%M:%S")),
-    }
+    local message_lines = {}
 
-    table.insert(message_lines, "")
     table.insert(message_lines, input_text)
 
     if not self.code_selection:is_empty() then
@@ -605,11 +622,6 @@ function SessionManager:_handle_input_submit(input_text)
         end
     end
 
-    table.insert(
-        message_lines,
-        "\n\n### 󱚠 Agent - " .. self.agent.provider_config.name
-    )
-
     local user_message = ACPPayloads.generate_user_message(message_lines)
     self.message_writer:write_message(user_message)
 
@@ -632,9 +644,6 @@ function SessionManager:_handle_input_submit(input_text)
 
     local session_id = self.session_id
     local tab_page_id = self.tab_page_id
-    -- Capture chat_history before send to avoid race with _cancel_session
-    -- replacing self.chat_history while the callback is pending
-    local chat_history = self.chat_history
 
     self.is_generating = true
 
@@ -672,31 +681,13 @@ function SessionManager:_handle_input_submit(input_text)
                 success = err == nil,
                 error = err,
             })
-
-            -- Save chat history after successful turn completion
-            if not err then
-                chat_history:save(function(save_err)
-                    if save_err then
-                        Logger.debug("Chat history save error:", save_err)
-                    end
-                end)
-            end
         end)
     end)
 end
 
---- Create a new session, optionally cancelling any existing one
---- @param opts {restore_mode?: boolean, on_created?: fun()}|nil
-function SessionManager:new_session(opts)
-    opts = opts or {}
-    local restore_mode = opts.restore_mode or false
-    local on_created = opts.on_created
-    if not restore_mode then
-        self:_cancel_session()
-    end
-
-    self.status_animation:start("busy")
-
+--- Build the standard ACP client handlers for session subscriptions
+--- @return agentic.acp.ClientHandlers handlers
+function SessionManager:_build_handlers()
     --- @type agentic.acp.ClientHandlers
     local handlers = {
         on_error = function(err)
@@ -749,6 +740,23 @@ function SessionManager:new_session(opts)
         end,
     }
 
+    return handlers
+end
+
+--- Create a new session, optionally cancelling any existing one
+--- @param opts {restore_mode?: boolean, on_created?: fun(), timestamp?: string|integer}|nil
+function SessionManager:new_session(opts)
+    opts = opts or {}
+    local restore_mode = opts.restore_mode or false
+    local on_created = opts.on_created
+    if not restore_mode then
+        self:_cancel_session()
+    end
+
+    self.status_animation:start("busy")
+
+    local handlers = self:_build_handlers()
+
     self.agent:create_session(handlers, function(response, err)
         self.status_animation:stop()
 
@@ -798,10 +806,11 @@ function SessionManager:new_session(opts)
             local welcome_message = SessionManager._generate_welcome_header(
                 self.agent.provider_config.name,
                 self.session_id,
-                agent_info and agent_info.version
+                agent_info and agent_info.version,
+                opts.timestamp
             )
 
-            self.message_writer:write_message(
+            self.message_writer:write_structural_message(
                 ACPPayloads.generate_user_message(welcome_message)
             )
 
@@ -814,6 +823,8 @@ function SessionManager:new_session(opts)
 end
 
 function SessionManager:_cancel_session()
+    self._is_restoring_session = false
+
     if self.session_id then
         -- only cancel and clear content if there was an session
         -- Otherwise, it clears selections and files when opening for the first time
@@ -832,6 +843,7 @@ function SessionManager:_cancel_session()
 
     self.chat_history = ChatHistory:new()
     self._history_to_send = nil
+    self.message_writer:reset_sender_tracking()
 end
 
 --- Switch to a different ACP provider while preserving chat UI and history.
@@ -858,6 +870,9 @@ function SessionManager:switch_provider()
         function(client)
             vim.schedule(function()
                 self.agent = client
+                self.message_writer:set_provider_name(
+                    client.provider_config.name
+                )
 
                 self:new_session({
                     restore_mode = true,
@@ -1081,51 +1096,108 @@ function SessionManager:destroy()
     self.widget:destroy()
 end
 
---- Restore session from loaded chat history
---- Creates a new ACP session (agent doesn't know old session_id)
---- and replays messages to UI. History is sent on first prompt submit.
---- @param history agentic.ui.ChatHistory
---- @param opts {reuse_session?: boolean}|nil If reuse_session=true, replay into current session without creating new one
-function SessionManager:restore_from_history(history, opts)
-    opts = opts or {}
-
-    -- Prevent constructor's auto-new_session from running
-    self._restoring = true
-    self._history_to_send = history.messages
-    self._is_first_message = false
-
-    -- Update existing chat_history with loaded data, keeping current session_id
-    if opts.reuse_session then
-        self.chat_history.messages = vim.deepcopy(history.messages)
-        self.chat_history.title = history.title or ""
-    else
-        self.chat_history = history
-    end
-
-    local SessionRestore = require("agentic.session_restore")
-
-    if opts.reuse_session and self.session_id then
-        -- Reuse existing ACP session, just replay messages
-        self._restoring = false
-        SessionRestore.replay_messages(
-            self.message_writer,
-            self._history_to_send
+--- Load an existing ACP session by ID, subscribing to its updates
+--- @param session_id string
+--- @param title string|nil
+--- @param timestamp string|integer|nil Timestamp for the banner; defaults to now
+function SessionManager:load_acp_session(session_id, title, timestamp)
+    local caps = self.agent.agent_capabilities
+    if not caps or not caps.loadSession then
+        Logger.notify(
+            "Agent does not support loading sessions",
+            vim.log.levels.WARN
         )
-        -- ACP session already knows these messages; clear to prevent duplicate prepend
-        self._history_to_send = nil
-    else
-        -- Create fresh ACP session, then replay messages after session is ready
-        self:new_session({
-            restore_mode = true,
-            on_created = function()
-                self._restoring = false
-                SessionRestore.replay_messages(
-                    self.message_writer,
-                    self._history_to_send
-                )
-            end,
-        })
+        return
     end
+
+    -- Preserve config_options (mode/model) across cancel — session/load doesn't
+    -- re-send them and they belong to the agent instance, not the session.
+    local saved_config = {
+        mode = self.config_options.mode,
+        model = self.config_options.model,
+        thought_level = self.config_options.thought_level,
+        legacy_modes = self.config_options.legacy_agent_modes,
+        legacy_models = self.config_options.legacy_agent_models,
+    }
+
+    self:_cancel_session()
+
+    self.config_options.mode = saved_config.mode
+    self.config_options.model = saved_config.model
+    self.config_options.thought_level = saved_config.thought_level
+    self.config_options.legacy_agent_modes = saved_config.legacy_modes
+    self.config_options.legacy_agent_models = saved_config.legacy_models
+
+    self._is_restoring_session = true
+    self.status_animation:start("busy")
+
+    -- Write banner before loading so it appears at top of cleared buffer
+    local agent_info = self.agent.agent_info
+    local welcome_message = SessionManager._generate_welcome_header(
+        self.agent.provider_config.name,
+        session_id,
+        agent_info and agent_info.version,
+        timestamp
+    )
+    self.message_writer:write_structural_message(
+        ACPPayloads.generate_user_message(welcome_message)
+    )
+
+    local handlers = self:_build_handlers()
+    local cwd = vim.fn.getcwd()
+
+    self.agent:load_session(session_id, cwd, {}, handlers, function(err)
+        -- vim.schedule to run AFTER deferred session update notifications
+        -- (user_message_chunk etc. are routed via __with_subscriber → vim.schedule)
+        vim.schedule(function()
+            self._is_restoring_session = false
+            self.status_animation:stop()
+
+            -- Guard: if a new session was created while the load was in flight,
+            -- don't stomp the new session's state
+            if self.session_id ~= nil then
+                return
+            end
+
+            if err then
+                local error_text = err.message or "unknown error"
+                Logger.notify(
+                    "Failed to load session: " .. error_text,
+                    vim.log.levels.ERROR
+                )
+                self.widget:clear()
+                self.message_writer:write_message(
+                    ACPPayloads.generate_agent_message(
+                        "### ❌ Failed to restore session\n\n" .. error_text
+                    )
+                )
+                return
+            end
+
+            self.session_id = session_id
+            self.chat_history.session_id = session_id
+            self.chat_history.title = title or ""
+            self.chat_history.timestamp = os.time()
+            self._is_first_message = false
+
+            -- Re-render mode in chat header from preserved config_options
+            local current_mode = self.config_options.mode
+                    and self.config_options.mode.currentValue
+                or self.config_options.legacy_agent_modes.current_mode_id
+            if current_mode then
+                self:_set_mode_to_chat_header(current_mode)
+            end
+
+            local finish_message = string.format(
+                "\n### 🏁 Session restored - %s\n-----",
+                os.date("%Y-%m-%d %H:%M:%S")
+            )
+
+            self.message_writer:write_message(
+                ACPPayloads.generate_agent_message(finish_message)
+            )
+        end)
+    end)
 end
 
 return SessionManager

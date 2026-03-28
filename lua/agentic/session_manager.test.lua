@@ -296,6 +296,7 @@ describe("agentic.SessionManager", function()
                     widget = { clear = widget_clear_spy },
                     file_list = { clear = file_list_clear_spy },
                     code_selection = { clear = code_selection_clear_spy },
+                    message_writer = { set_provider_name = function() end },
                     chat_history = mock_chat_history,
                     _is_first_message = false,
                     _history_to_send = nil,
@@ -360,6 +361,7 @@ describe("agentic.SessionManager", function()
                     },
                     permission_manager = { clear = function() end },
                     todo_list = { clear = function() end },
+                    message_writer = { set_provider_name = function() end },
                     chat_history = saved_history,
                     _is_first_message = false,
                     _history_to_send = nil,
@@ -409,6 +411,7 @@ describe("agentic.SessionManager", function()
                 agent = mock_agent,
                 permission_manager = { clear = spy.new(function() end) },
                 todo_list = { clear = spy.new(function() end) },
+                message_writer = { set_provider_name = function() end },
                 chat_history = { messages = {} },
                 _is_first_message = false,
                 _history_to_send = nil,
@@ -446,6 +449,65 @@ describe("agentic.SessionManager", function()
 
             assert.equal("reload", child.v.fcs_choice)
         end)
+    end)
+
+    describe("_on_session_update: user_message_chunk", function()
+        --- @type TestSpy
+        local write_message_spy
+
+        --- @type TestSpy
+        local write_restoring_message_spy
+
+        --- @type agentic.SessionManager
+        local session
+
+        before_each(function()
+            write_message_spy = spy.new(function() end)
+            write_restoring_message_spy = spy.new(function() end)
+
+            session = {
+                _is_restoring_session = false,
+                message_writer = {
+                    write_message = write_message_spy,
+                    write_restoring_message = write_restoring_message_spy,
+                },
+                agent = { provider_config = { name = "test-provider" } },
+                chat_history = { add_message = spy.new(function() end) },
+                _on_session_update = SessionManager._on_session_update,
+            } --[[@as agentic.SessionManager]]
+        end)
+
+        it("ignores chunk when _is_restoring_session is false", function()
+            session:_on_session_update({
+                sessionUpdate = "user_message_chunk",
+                content = { type = "text", text = "hello" },
+            })
+
+            assert.spy(write_message_spy).was.called(0)
+            assert.spy(write_restoring_message_spy).was.called(0)
+        end)
+
+        it(
+            "renders as formatted message when _is_restoring_session is true",
+            function()
+                session._is_restoring_session = true --- @diagnostic disable-line: inject-field
+
+                session:_on_session_update({
+                    sessionUpdate = "user_message_chunk",
+                    content = { type = "text", text = "hello" },
+                })
+
+                assert.spy(write_restoring_message_spy).was.called(1)
+                assert.spy(write_message_spy).was.called(0)
+                local message = write_restoring_message_spy.calls[1][2]
+                assert.truthy(message.content.text:match("hello"))
+
+                assert.spy(session.chat_history.add_message).was.called(1)
+                local added = session.chat_history.add_message.calls[1][2] --- @diagnostic disable-line: undefined-field
+                assert.equal("user", added.type)
+                assert.equal("hello", added.text)
+            end
+        )
     end)
 
     describe("on_tool_call_update: buffer reload", function()

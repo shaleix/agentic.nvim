@@ -16,13 +16,34 @@
 --- @field clientInfo agentic.acp.ClientInfo
 --- @field clientCapabilities agentic.acp.ClientCapabilities
 
+--- @class agentic.acp.InitializeResponse
+--- @field protocolVersion number
+--- @field agentCapabilities agentic.acp.AgentCapabilities
+--- @field agentInfo agentic.acp.AgentInfo
+--- @field authMethods? agentic.acp.AuthMethod[]
+
 --- @class agentic.acp.FileSystemCapability
 --- @field readTextFile boolean
 --- @field writeTextFile boolean
 
+--- @class agentic.acp.SessionCapabilities
+--- @field list? boolean
+
 --- @class agentic.acp.AgentCapabilities
 --- @field loadSession boolean
+--- @field sessionCapabilities? agentic.acp.SessionCapabilities
 --- @field promptCapabilities agentic.acp.PromptCapabilities
+
+--- @class agentic.acp.SessionInfo
+--- @field sessionId string
+--- @field cwd string
+--- @field title? string
+--- @field updatedAt? string
+--- @field _meta? table<string, any>
+
+--- @class agentic.acp.SessionListResponse
+--- @field sessions agentic.acp.SessionInfo[]
+--- @field nextCursor? string
 
 --- @class agentic.acp.PromptCapabilities
 --- @field image boolean
@@ -182,10 +203,10 @@
 --- @class agentic.acp.ResponseRaw
 --- @field id? number
 --- @field jsonrpc string
---- @field method string
+--- @field method? string
 --- @field result? table
---- @field params? agentic.acp.ResponseRawParams
 --- @field error? agentic.acp.ACPError
+--- @field params? agentic.acp.ResponseRawParams
 
 --- Shared base fields for ToolCall and ToolCallUpdate.
 --- In the ACP spec, ToolCallUpdate is a partial version where all fields
