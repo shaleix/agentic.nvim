@@ -3,7 +3,6 @@ local assert = require("tests.helpers.assert")
 local spy = require("tests.helpers.spy")
 
 local AgentModes = require("agentic.acp.agent_modes")
-local Config = require("agentic.config")
 local Logger = require("agentic.utils.logger")
 local SessionManager = require("agentic.session_manager")
 
@@ -211,223 +210,6 @@ describe("agentic.SessionManager", function()
         end)
     end)
 
-    describe("switch_provider", function()
-        --- @type TestStub
-        local notify_stub
-        --- @type TestStub
-        local get_instance_stub
-        --- @type TestStub
-        local schedule_stub
-        local original_provider
-
-        before_each(function()
-            original_provider = Config.provider
-            notify_stub = spy.stub(Logger, "notify")
-            schedule_stub = spy.stub(vim, "schedule")
-            schedule_stub:invokes(function(fn)
-                fn()
-            end)
-        end)
-
-        after_each(function()
-            Config.provider = original_provider
-            schedule_stub:revert()
-            notify_stub:revert()
-            if get_instance_stub then
-                get_instance_stub:revert()
-                get_instance_stub = nil
-            end
-        end)
-
-        it("blocks when is_generating is true", function()
-            local session = {
-                is_generating = true,
-                switch_provider = SessionManager.switch_provider,
-            } --[[@as agentic.SessionManager]]
-
-            session:switch_provider()
-
-            assert.spy(notify_stub).was.called(1)
-            local msg = notify_stub.calls[1][1]
-            assert.truthy(msg:match("[Gg]enerating"))
-        end)
-
-        it(
-            "soft cancels old session without clearing widget/history",
-            function()
-                local cancel_spy = spy.new(function() end)
-                local perm_clear_spy = spy.new(function() end)
-                local todo_clear_spy = spy.new(function() end)
-                local widget_clear_spy = spy.new(function() end)
-                local file_list_clear_spy = spy.new(function() end)
-                local code_selection_clear_spy = spy.new(function() end)
-
-                local AgentInstance = require("agentic.acp.agent_instance")
-                local mock_new_agent = {
-                    provider_config = { name = "New Provider" },
-                    create_session = spy.new(function() end),
-                }
-                get_instance_stub = spy.stub(AgentInstance, "get_instance")
-                get_instance_stub:invokes(function(_provider, on_ready)
-                    on_ready(mock_new_agent)
-                    return mock_new_agent
-                end)
-
-                local new_session_spy = spy.new(function() end)
-
-                local original_messages = { { type = "user", text = "hello" } }
-                local mock_chat_history = {
-                    messages = original_messages,
-                    session_id = "old-session",
-                }
-
-                Config.provider = "new-provider"
-
-                local session = {
-                    is_generating = false,
-                    session_id = "old-session",
-
-                    agent = {
-                        cancel_session = cancel_spy,
-                        provider_config = { name = "Old Provider" },
-                    },
-                    permission_manager = { clear = perm_clear_spy },
-                    todo_list = { clear = todo_clear_spy },
-                    widget = { clear = widget_clear_spy },
-                    file_list = { clear = file_list_clear_spy },
-                    code_selection = { clear = code_selection_clear_spy },
-                    message_writer = { set_provider_name = function() end },
-                    chat_history = mock_chat_history,
-                    _is_first_message = false,
-                    _history_to_send = nil,
-                    new_session = new_session_spy,
-                    switch_provider = SessionManager.switch_provider,
-                } --[[@as agentic.SessionManager]]
-
-                session:switch_provider()
-
-                assert.spy(cancel_spy).was.called(1)
-                assert.is_nil(session.session_id)
-                assert.spy(perm_clear_spy).was.called(1)
-                assert.spy(todo_clear_spy).was.called(1)
-
-                assert.spy(widget_clear_spy).was.called(0)
-                assert.spy(file_list_clear_spy).was.called(0)
-                assert.spy(code_selection_clear_spy).was.called(0)
-
-                assert.equal(mock_new_agent, session.agent)
-
-                assert.spy(new_session_spy).was.called(1)
-                local opts = new_session_spy.calls[1][2]
-                assert.is_true(opts.restore_mode)
-                assert.equal("function", type(opts.on_created))
-            end
-        )
-
-        it(
-            "schedules history resend and sets _is_first_message in on_created",
-            function()
-                local AgentInstance = require("agentic.acp.agent_instance")
-                local mock_new_agent = {
-                    provider_config = { name = "New Provider" },
-                    create_session = spy.new(function() end),
-                }
-                get_instance_stub = spy.stub(AgentInstance, "get_instance")
-                get_instance_stub:invokes(function(_provider, on_ready)
-                    on_ready(mock_new_agent)
-                    return mock_new_agent
-                end)
-
-                local captured_on_created
-                local new_session_spy = spy.new(function(_self, opts)
-                    captured_on_created = opts.on_created
-                end)
-
-                local original_messages = { { type = "user", text = "hello" } }
-                local saved_history = {
-                    messages = original_messages,
-                    session_id = "old",
-                }
-
-                Config.provider = "new-provider"
-
-                local session = {
-                    is_generating = false,
-                    session_id = "old-session",
-
-                    agent = {
-                        cancel_session = spy.new(function() end),
-                        provider_config = { name = "Old" },
-                    },
-                    permission_manager = { clear = function() end },
-                    todo_list = { clear = function() end },
-                    message_writer = { set_provider_name = function() end },
-                    chat_history = saved_history,
-                    _is_first_message = false,
-                    _history_to_send = nil,
-                    new_session = new_session_spy,
-                    switch_provider = SessionManager.switch_provider,
-                } --[[@as agentic.SessionManager]]
-
-                session:switch_provider()
-
-                assert.is_not_nil(captured_on_created)
-
-                local new_timestamp = os.time()
-                session.chat_history = {
-                    messages = {},
-                    session_id = "new",
-                    timestamp = new_timestamp,
-                }
-                captured_on_created()
-
-                assert.same(original_messages, session.chat_history.messages)
-                assert.equal("new", session.chat_history.session_id)
-                assert.equal(new_timestamp, session.chat_history.timestamp)
-                assert.same(original_messages, session._history_to_send)
-                assert.is_true(session._is_first_message)
-            end
-        )
-
-        it("no-ops soft cancel when session_id is nil", function()
-            local AgentInstance = require("agentic.acp.agent_instance")
-            local mock_agent = {
-                provider_config = { name = "Provider" },
-                cancel_session = spy.new(function() end),
-                create_session = spy.new(function() end),
-            }
-            get_instance_stub = spy.stub(AgentInstance, "get_instance")
-            get_instance_stub:invokes(function(_provider, on_ready)
-                on_ready(mock_agent)
-                return mock_agent
-            end)
-
-            Config.provider = "some-provider"
-
-            local session = {
-                is_generating = false,
-                session_id = nil,
-
-                agent = mock_agent,
-                permission_manager = { clear = spy.new(function() end) },
-                todo_list = { clear = spy.new(function() end) },
-                message_writer = { set_provider_name = function() end },
-                chat_history = { messages = {} },
-                _is_first_message = false,
-                _history_to_send = nil,
-                new_session = spy.new(function() end),
-                switch_provider = SessionManager.switch_provider,
-            } --[[@as agentic.SessionManager]]
-
-            session:switch_provider()
-
-            assert.spy(mock_agent.cancel_session).was.called(0)
-            assert.spy(session.permission_manager.clear).was.called(1)
-            assert.spy(session.todo_list.clear).was.called(1)
-            assert.spy(session.new_session).was.called(1)
-        end)
-    end)
-
     describe("FileChangedShell autocommand", function()
         local Child = require("tests.helpers.child")
         local child = Child:new()
@@ -448,6 +230,408 @@ describe("agentic.SessionManager", function()
             })
 
             assert.equal("reload", child.v.fcs_choice)
+        end)
+    end)
+
+    describe("can_submit_prompt", function()
+        --- @type TestStub
+        local get_instance_stub
+        --- @type TestStub
+        local notify_stub
+        --- @type TestStub
+        local schedule_stub
+        --- @type TestStub
+        local health_check_stub
+
+        --- @type fun()[]
+        local schedule_queue = {}
+
+        local function flush_schedule()
+            while #schedule_queue > 0 do
+                local fn = table.remove(schedule_queue, 1)
+                fn()
+            end
+        end
+
+        before_each(function()
+            local AgentInstance = require("agentic.acp.agent_instance")
+            local ACPHealth = require("agentic.acp.acp_health")
+            local Config = require("agentic.config")
+
+            notify_stub = spy.stub(Logger, "notify")
+            schedule_queue = {}
+            schedule_stub = spy.stub(vim, "schedule")
+            schedule_stub:invokes(function(fn)
+                table.insert(schedule_queue, fn)
+            end)
+            health_check_stub = spy.stub(ACPHealth, "check_configured_provider")
+            health_check_stub:returns(true)
+            get_instance_stub = spy.stub(AgentInstance, "get_instance")
+            get_instance_stub:invokes(function(provider_name, callback)
+                --- @type agentic.acp.ACPClient
+                local fake = {}
+                fake.state = "ready"
+                fake.provider_config = {
+                    name = provider_name or "Test",
+                    initial_model = nil,
+                    default_mode = nil,
+                }
+                fake.agent_info = {}
+                function fake:create_session(_h, cb)
+                    cb({
+                        sessionId = "test-session",
+                        configOptions = nil,
+                        modes = nil,
+                        models = nil,
+                    })
+                end
+                function fake:cancel_session() end
+                if callback then
+                    callback(fake)
+                end
+                return fake
+            end)
+            Config.provider = "TestProvider"
+        end)
+
+        after_each(function()
+            notify_stub:revert()
+            schedule_stub:revert()
+            health_check_stub:revert()
+            get_instance_stub:revert()
+
+            local SessionRegistry = require("agentic.session_registry")
+            local tab_ids = {}
+            for tab_id, _ in pairs(SessionRegistry.sessions) do
+                table.insert(tab_ids, tab_id)
+            end
+            for _, tab_id in ipairs(tab_ids) do
+                SessionRegistry.destroy_session(tab_id)
+            end
+        end)
+
+        it("returns false when connection error occurred", function()
+            local tab_page_id = vim.api.nvim_get_current_tabpage()
+            local session = SessionManager:new(tab_page_id) --[[@as agentic.SessionManager]]
+            flush_schedule()
+            session.session_id = "test-session" --[[@as string]]
+            session._connection_error = true
+
+            local result = session:can_submit_prompt()
+
+            assert.is_false(result)
+            assert.spy(notify_stub).was.called()
+            local msg = notify_stub.calls[1][1]
+            assert.truthy(msg:match("[Cc]onnection"))
+        end)
+    end)
+
+    describe("on_session_ready", function()
+        --- @type TestStub
+        local get_instance_stub
+        --- @type TestStub
+        local notify_stub
+        --- @type TestStub
+        local schedule_stub
+        --- @type TestStub
+        local health_check_stub
+
+        --- @type fun()[]
+        local schedule_queue = {}
+
+        local function flush_schedule()
+            while #schedule_queue > 0 do
+                local fn = table.remove(schedule_queue, 1)
+                fn()
+            end
+        end
+
+        before_each(function()
+            local AgentInstance = require("agentic.acp.agent_instance")
+            local ACPHealth = require("agentic.acp.acp_health")
+            local Config = require("agentic.config")
+
+            notify_stub = spy.stub(Logger, "notify")
+            schedule_queue = {}
+            schedule_stub = spy.stub(vim, "schedule")
+            schedule_stub:invokes(function(fn)
+                table.insert(schedule_queue, fn)
+            end)
+            health_check_stub = spy.stub(ACPHealth, "check_configured_provider")
+            health_check_stub:returns(true)
+            get_instance_stub = spy.stub(AgentInstance, "get_instance")
+            get_instance_stub:invokes(function(provider_name, callback)
+                --- @type agentic.acp.ACPClient
+                local fake = {}
+                fake.state = "ready"
+                fake.provider_config = {
+                    name = provider_name or "Test",
+                    initial_model = nil,
+                    default_mode = nil,
+                }
+                fake.agent_info = {}
+                function fake:create_session(_h, cb)
+                    cb({
+                        sessionId = "test-session",
+                        configOptions = nil,
+                        modes = nil,
+                        models = nil,
+                    })
+                end
+                function fake:cancel_session() end
+                if callback then
+                    callback(fake)
+                end
+                return fake
+            end)
+            Config.provider = "TestProvider"
+        end)
+
+        after_each(function()
+            notify_stub:revert()
+            schedule_stub:revert()
+            health_check_stub:revert()
+            get_instance_stub:revert()
+
+            local SessionRegistry = require("agentic.session_registry")
+            local tab_ids = {}
+            for tab_id, _ in pairs(SessionRegistry.sessions) do
+                table.insert(tab_ids, tab_id)
+            end
+            for _, tab_id in ipairs(tab_ids) do
+                SessionRegistry.destroy_session(tab_id)
+            end
+        end)
+
+        it("fires immediately via schedule when session_id exists", function()
+            local tab_page_id = vim.api.nvim_get_current_tabpage()
+            local session = SessionManager:new(tab_page_id) --[[@as agentic.SessionManager]]
+            flush_schedule()
+            session.session_id = "ready-session" --[[@as string]]
+
+            local callback_called = false
+            local received_session = nil
+            session:on_session_ready(function(s)
+                callback_called = true
+                received_session = s
+            end)
+
+            -- Not called yet (queued via vim.schedule)
+            assert.is_false(callback_called)
+
+            flush_schedule()
+
+            assert.is_true(callback_called)
+            assert.equal(session, received_session)
+        end)
+
+        it("queues callback when session_id is nil", function()
+            local tab_page_id = vim.api.nvim_get_current_tabpage()
+            local session = SessionManager:new(tab_page_id) --[[@as agentic.SessionManager]]
+            -- Don't flush — session_id stays nil
+
+            local callback_called = false
+            session:on_session_ready(function()
+                callback_called = true
+            end)
+
+            -- Don't flush — callback should be queued, not fired
+            assert.is_false(callback_called)
+            assert.equal(1, #session._session_ready_callbacks)
+        end)
+    end)
+
+    describe("_handle_connection_error", function()
+        --- @type TestStub
+        local get_instance_stub
+        --- @type TestStub
+        local notify_stub
+        --- @type TestStub
+        local schedule_stub
+        --- @type TestStub
+        local health_check_stub
+
+        before_each(function()
+            local AgentInstance = require("agentic.acp.agent_instance")
+            local ACPHealth = require("agentic.acp.acp_health")
+            local Config = require("agentic.config")
+
+            notify_stub = spy.stub(Logger, "notify")
+            schedule_stub = spy.stub(vim, "schedule")
+            schedule_stub:invokes(function() end)
+            health_check_stub = spy.stub(ACPHealth, "check_configured_provider")
+            health_check_stub:returns(true)
+            get_instance_stub = spy.stub(AgentInstance, "get_instance")
+            get_instance_stub:invokes(function(provider_name, callback)
+                --- @type agentic.acp.ACPClient
+                local fake = {}
+                fake.state = "ready"
+                fake.provider_config = {
+                    name = provider_name or "Test",
+                    initial_model = nil,
+                    default_mode = nil,
+                }
+                fake.agent_info = {}
+                function fake:create_session(_h, cb)
+                    cb({
+                        sessionId = "test-session",
+                        configOptions = nil,
+                        modes = nil,
+                        models = nil,
+                    })
+                end
+                function fake:cancel_session() end
+                if callback then
+                    callback(fake)
+                end
+                return fake
+            end)
+            Config.provider = "TestProvider"
+        end)
+
+        after_each(function()
+            notify_stub:revert()
+            schedule_stub:revert()
+            health_check_stub:revert()
+            get_instance_stub:revert()
+
+            local SessionRegistry = require("agentic.session_registry")
+            local tab_ids = {}
+            for tab_id, _ in pairs(SessionRegistry.sessions) do
+                table.insert(tab_ids, tab_id)
+            end
+            for _, tab_id in ipairs(tab_ids) do
+                SessionRegistry.destroy_session(tab_id)
+            end
+        end)
+
+        it("clears session_ready_callbacks", function()
+            local tab_page_id = vim.api.nvim_get_current_tabpage()
+            local session = SessionManager:new(tab_page_id) --[[@as agentic.SessionManager]]
+            -- Session stays uninitialized (schedule is no-op), queue a callback
+            session:on_session_ready(function() end)
+            assert.equal(1, #session._session_ready_callbacks)
+
+            session:_handle_connection_error()
+
+            assert.equal(0, #session._session_ready_callbacks)
+            assert.is_true(session._connection_error)
+        end)
+    end)
+
+    describe("history_to_send consumption", function()
+        --- @type TestStub
+        local get_instance_stub
+        --- @type TestStub
+        local notify_stub
+        --- @type TestStub
+        local schedule_stub
+        --- @type TestStub
+        local health_check_stub
+
+        --- @type fun()[]
+        local schedule_queue = {}
+
+        local function flush_schedule()
+            while #schedule_queue > 0 do
+                local fn = table.remove(schedule_queue, 1)
+                fn()
+            end
+        end
+
+        before_each(function()
+            local AgentInstance = require("agentic.acp.agent_instance")
+            local ACPHealth = require("agentic.acp.acp_health")
+            local Config = require("agentic.config")
+
+            notify_stub = spy.stub(Logger, "notify")
+            schedule_queue = {}
+            schedule_stub = spy.stub(vim, "schedule")
+            schedule_stub:invokes(function(fn)
+                table.insert(schedule_queue, fn)
+            end)
+            health_check_stub = spy.stub(ACPHealth, "check_configured_provider")
+            health_check_stub:returns(true)
+            get_instance_stub = spy.stub(AgentInstance, "get_instance")
+            get_instance_stub:invokes(function(provider_name, callback)
+                --- @type agentic.acp.ACPClient
+                local fake = {}
+                fake.state = "ready"
+                fake.provider_config = {
+                    name = provider_name or "Test",
+                    initial_model = nil,
+                    default_mode = nil,
+                }
+                fake.agent_info = {}
+                function fake:create_session(_h, cb)
+                    cb({
+                        sessionId = "test-session",
+                        configOptions = nil,
+                        modes = nil,
+                        models = nil,
+                    })
+                end
+                function fake:cancel_session() end
+                function fake:send_prompt() end
+                if callback then
+                    callback(fake)
+                end
+                return fake
+            end)
+            Config.provider = "TestProvider"
+        end)
+
+        after_each(function()
+            notify_stub:revert()
+            schedule_stub:revert()
+            health_check_stub:revert()
+            get_instance_stub:revert()
+
+            local SessionRegistry = require("agentic.session_registry")
+            local tab_ids = {}
+            for tab_id, _ in pairs(SessionRegistry.sessions) do
+                table.insert(tab_ids, tab_id)
+            end
+            for _, tab_id in ipairs(tab_ids) do
+                SessionRegistry.destroy_session(tab_id)
+            end
+        end)
+
+        it("prepends history on first submit and clears it", function()
+            local tab_page_id = vim.api.nvim_get_current_tabpage()
+            local session = SessionManager:new(tab_page_id) --[[@as agentic.SessionManager]]
+            flush_schedule()
+            session.session_id = "test-session" --[[@as string]]
+
+            local SessionRegistry = require("agentic.session_registry")
+            SessionRegistry.sessions[tab_page_id] = session
+
+            --- @type agentic.ui.ChatHistory.Message[]
+            local history = {
+                {
+                    type = "user",
+                    text = "old msg",
+                    timestamp = os.time(),
+                    provider_name = "P",
+                },
+            }
+            session.history_to_send = history
+
+            -- Stub agent's send_prompt to capture the prompt
+            local submitted_prompt = nil
+            session.agent.send_prompt = function(_self, _sid, prompt)
+                submitted_prompt = prompt
+            end
+
+            -- Submit via the internal method
+            session:_handle_input_submit("new question")
+
+            -- history_to_send should be consumed (nil)
+            assert.is_nil(session.history_to_send)
+
+            -- Prompt should contain the restored history
+            assert.is_not_nil(submitted_prompt)
+            assert.truthy(#submitted_prompt >= 2)
         end)
     end)
 

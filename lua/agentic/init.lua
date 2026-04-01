@@ -173,9 +173,108 @@ end
 
 --- @param provider_name agentic.UserConfig.ProviderName
 local function apply_provider_switch(provider_name)
-    Config.provider = provider_name
+    Logger.debug(
+        "apply_provider_switch: starting for provider " .. provider_name
+    )
     SessionRegistry.get_session_for_tab_page(nil, function(session)
-        session:switch_provider()
+        -- Guard: reject if session is being created or generating
+        if not session.session_id then
+            Logger.notify(
+                "Cannot switch provider: session is initializing. Please wait.",
+                vim.log.levels.WARN
+            )
+            return
+        end
+
+        if session.is_generating then
+            Logger.notify(
+                "Cannot switch provider while generating. Stop generation first.",
+                vim.log.levels.WARN
+            )
+            return
+        end
+
+        -- Save state before destroying
+        Logger.debug(
+            "apply_provider_switch: saving "
+                .. tostring(#session.chat_history.messages)
+                .. " messages"
+        )
+        local saved_messages = session.chat_history.messages
+        local saved_files = session.file_list:get_files()
+        local saved_selections = session.code_selection:get_selections()
+        local widget_was_open = session.widget:is_open()
+        local tab_page_id = session.tab_page_id
+
+        -- Validate new provider exists BEFORE destroying old session
+        local ok, new_agent = pcall(
+            AgentInstance.get_instance,
+            provider_name,
+            function() end
+        )
+        if not ok or not new_agent then
+            Logger.notify(
+                "Provider '" .. provider_name .. "' not available.",
+                vim.log.levels.ERROR
+            )
+            return
+        end
+
+        -- Destroy old session
+        Logger.debug("apply_provider_switch: destroying old session")
+        SessionRegistry.destroy_session(tab_page_id)
+
+        -- Update config for new session
+        Config.provider = provider_name
+
+        -- Create new session via registry
+        Logger.debug("apply_provider_switch: creating new session")
+        local new_session =
+            SessionRegistry.get_session_for_tab_page(tab_page_id)
+        if not new_session then
+            Logger.notify(
+                "Failed to create session for provider '"
+                    .. provider_name
+                    .. "'.",
+                vim.log.levels.ERROR
+            )
+            return
+        end
+
+        Logger.debug(
+            "apply_provider_switch: new_session created, session_id="
+                .. tostring(new_session.session_id)
+        )
+        -- Restore files and code selections immediately (don't wait for session ready)
+        for _, file_path in ipairs(saved_files) do
+            new_session.file_list:add(file_path)
+        end
+        for _, selection in ipairs(saved_selections) do
+            new_session.code_selection:add(selection)
+        end
+
+        -- Register callback for when session is ready
+        -- This waits for: agent ready -> session created -> welcome banner written
+        new_session:on_session_ready(function(ready_session)
+            Logger.debug(
+                "Replaying "
+                    .. tostring(#saved_messages)
+                    .. " messages after provider switch"
+            )
+
+            -- Restore chat history and history_to_send for persistence
+            -- Must be set here (not before) because new_session() clears history_to_send
+            ready_session.chat_history.messages = saved_messages
+            ready_session.history_to_send = saved_messages
+
+            -- Replay messages visually in the chat buffer (after welcome header is written)
+            ready_session.message_writer:replay_history_messages(saved_messages)
+        end)
+
+        -- Open widget immediately if it was open before
+        if widget_was_open then
+            new_session.widget:show()
+        end
     end)
 end
 

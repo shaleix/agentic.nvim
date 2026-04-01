@@ -47,7 +47,7 @@ end
 --- @class agentic.SessionManager
 --- @field session_id? string
 --- @field tab_page_id integer
---- @field _is_first_message boolean Whether this is the first message in the session, used to add system info only once
+--- @field _is_first_message boolean
 --- @field is_generating boolean
 --- @field widget agentic.ui.ChatWidget
 --- @field agent agentic.acp.ACPClient
@@ -60,8 +60,10 @@ end
 --- @field config_options agentic.acp.AgentConfigOptions
 --- @field todo_list agentic.ui.TodoList
 --- @field chat_history agentic.ui.ChatHistory
---- @field _history_to_send? agentic.ui.ChatHistory.Message[] Messages to prepend on next prompt submit
---- @field _is_restoring_session boolean Whether a session is being loaded from history
+--- @field history_to_send agentic.ui.ChatHistory.Message[]|nil
+--- @field _is_restoring_session boolean
+--- @field _connection_error boolean
+--- @field _session_ready_callbacks fun()[]
 local SessionManager = {}
 SessionManager.__index = SessionManager
 
@@ -113,10 +115,21 @@ function SessionManager:new(tab_page_id)
         _is_first_message = true,
         is_generating = false,
         _is_restoring_session = false,
+        _connection_error = false,
+        history_to_send = nil,
+        _session_ready_callbacks = {},
     }, self)
 
     local agent = AgentInstance.get_instance(Config.provider, function(_client)
         vim.schedule(function()
+            -- Guard: cached client may be dead
+            if
+                self.agent.state == "error"
+                or self.agent.state == "disconnected"
+            then
+                self:_handle_connection_error()
+                return
+            end
             self:new_session()
         end)
     end)
@@ -131,12 +144,27 @@ function SessionManager:new(tab_page_id)
     self.chat_history = ChatHistory:new()
 
     self.widget = ChatWidget:new(tab_page_id, function(input_text)
-        self:_handle_input_submit(input_text)
+        return self:_handle_input_submit(input_text)
     end)
 
     self.message_writer = MessageWriter:new(self.widget.buf_nrs.chat)
     self.message_writer:set_provider_name(self.agent.provider_config.name)
     self.status_animation = StatusAnimation:new(self.widget.buf_nrs.chat)
+    self.status_animation:start("busy")
+
+    -- Check for sync failure during ACPClient construction
+    -- Guard with _connection_error to avoid double-fire if async callback already ran
+    if
+        not self._connection_error
+        and (self.agent.state == "error" or self.agent.state == "disconnected")
+    then
+        vim.schedule(function()
+            if not self._connection_error then
+                self:_handle_connection_error()
+            end
+        end)
+    end
+
     self.permission_manager = PermissionManager:new(self.message_writer)
 
     FilePicker:new(self.widget.buf_nrs.input)
@@ -204,6 +232,86 @@ function SessionManager:new(tab_page_id)
     end)
 
     return self
+end
+
+--- Handle provider connection failure.
+--- Stops busy animation and writes error to chat buffer.
+function SessionManager:_handle_connection_error()
+    self._connection_error = true
+    self._session_ready_callbacks = {}
+    self.status_animation:stop()
+    self.message_writer:write_message(
+        ACPPayloads.generate_agent_message(
+            "⚠️ Failed to connect to "
+                .. self.agent.provider_config.name
+                .. ". Check that the provider is"
+                .. " installed and try again"
+                .. " with a new session."
+        )
+    )
+end
+
+--- Register callback for when ACP session is ready.
+--- Fires immediately (via vim.schedule) if session
+--- already exists.
+--- @param callback fun(session: agentic.SessionManager)
+function SessionManager:on_session_ready(callback)
+    if self.session_id then
+        Logger.debug(
+            "on_session_ready: session already ready, scheduling callback immediately"
+        )
+        vim.schedule(function()
+            callback(self)
+        end)
+        return
+    end
+
+    Logger.debug(
+        "on_session_ready: queueing callback, will fire when session ready"
+    )
+    table.insert(self._session_ready_callbacks, function()
+        callback(self)
+    end)
+end
+
+--- Check if a prompt can be submitted to the session.
+--- Returns false if session not ready, generating, or
+--- restoring. Notifies user of the reason.
+--- @return boolean can_submit
+function SessionManager:can_submit_prompt()
+    if self._connection_error then
+        Logger.notify(
+            "Provider connection failed. Start a new session.",
+            vim.log.levels.ERROR
+        )
+        return false
+    end
+
+    if not self.session_id then
+        Logger.notify(
+            "Session not ready. Wait for initialization to complete.",
+            vim.log.levels.WARN
+        )
+        return false
+    end
+
+    if self._is_restoring_session then
+        Logger.notify(
+            "Session is restoring. Please wait...",
+            vim.log.levels.WARN
+        )
+        return false
+    end
+
+    if self.is_generating then
+        Logger.notify(
+            "Agent is still processing. Please wait...",
+            vim.log.levels.WARN
+        )
+        return false
+    end
+
+    return true
 end
 
 --- @param update agentic.acp.SessionUpdateMessage
@@ -484,25 +592,31 @@ function SessionManager:_set_mode_to_chat_header(mode_id)
 end
 
 --- @param input_text string
+--- @return boolean submitted
 function SessionManager:_handle_input_submit(input_text)
     self.todo_list:close_if_all_completed()
+
+    -- Guard: cannot submit if session not ready or generating
+    if not self:can_submit_prompt() then
+        return false
+    end
 
     -- Intercept /new command to start new session locally, cancelling existing one
     -- Its necessary to avoid race conditions and make sure everything is cleaned properly,
     -- the Agent might not send an identifiable response that could be acted upon
     if input_text:match("^/new%s*") then
         self:new_session()
-        return
+        return true
     end
 
     --- @type agentic.acp.Content[]
     local prompt = {}
 
     -- If restored/switched session, prepend history on first submit
-    if self._history_to_send then
+    if self.history_to_send then
         self.chat_history.title = input_text -- Update title for restored session
-        ChatHistory.prepend_restored_messages(self._history_to_send, prompt)
-        self._history_to_send = nil
+        ChatHistory.prepend_restored_messages(self.history_to_send, prompt)
+        self.history_to_send = nil
     elseif self.chat_history.title == "" then
         self.chat_history.title = input_text -- Set title for new session
     end
@@ -697,6 +811,8 @@ function SessionManager:_handle_input_submit(input_text)
             })
         end)
     end)
+
+    return true
 end
 
 --- Build the standard ACP client handlers for session subscriptions
@@ -839,6 +955,19 @@ function SessionManager:new_session(opts)
             if on_created then
                 on_created()
             end
+
+            -- Fire session ready callbacks after welcome banner
+            if #self._session_ready_callbacks > 0 then
+                Logger.debug(
+                    "Firing "
+                        .. tostring(#self._session_ready_callbacks)
+                        .. " session ready callbacks"
+                )
+            end
+            for _, cb in ipairs(self._session_ready_callbacks) do
+                cb()
+            end
+            self._session_ready_callbacks = {}
         end)
     end)
 end
@@ -863,72 +992,8 @@ function SessionManager:_cancel_session()
     SlashCommands.setCommands(self.widget.buf_nrs.input, {})
 
     self.chat_history = ChatHistory:new()
-    self._history_to_send = nil
+    self.history_to_send = nil
     self.message_writer:reset_sender_tracking()
-end
-
---- Switch to a different ACP provider while preserving chat UI and history.
---- Reads Config.provider (already set by caller) for the target provider.
-function SessionManager:switch_provider()
-    if self.is_generating then
-        Logger.notify(
-            "Cannot switch provider while generating. Stop generation first.",
-            vim.log.levels.WARN
-        )
-        return
-    end
-
-    local AgentInstance = require("agentic.acp.agent_instance")
-
-    -- Save references before get_instance (on_ready may fire synchronously)
-    local saved_history = self.chat_history
-    local old_agent = self.agent
-    local old_session_id = self.session_id
-
-    -- Get new agent instance BEFORE tearing down the current session
-    local new_agent = AgentInstance.get_instance(
-        Config.provider,
-        function(client)
-            vim.schedule(function()
-                self.agent = client
-                self.message_writer:set_provider_name(
-                    client.provider_config.name
-                )
-
-                self:new_session({
-                    restore_mode = true,
-                    on_created = function()
-                        -- Capture new session metadata before overwriting
-                        local new_session_id = self.chat_history.session_id
-                        local new_timestamp = self.chat_history.timestamp
-
-                        -- Restore saved messages (new_session created a fresh one)
-                        self.chat_history = saved_history
-                        self.chat_history.session_id = new_session_id
-                        self.chat_history.timestamp = new_timestamp
-                        self._history_to_send = saved_history.messages
-                        self._is_first_message = true
-                    end,
-                })
-            end)
-        end
-    )
-
-    if not new_agent then
-        return
-    end
-
-    -- Soft cancel: tear down old ACP session now that we have a new agent
-    if old_session_id then
-        old_agent:cancel_session(old_session_id)
-    end
-    self.session_id = nil
-    self.permission_manager:clear()
-    self.todo_list:clear()
-
-    -- If agent was already cached, on_ready fired synchronously above.
-    -- If not, it will fire when the process is ready.
-    self.agent = new_agent
 end
 
 function SessionManager:add_selection_or_file_to_session()
