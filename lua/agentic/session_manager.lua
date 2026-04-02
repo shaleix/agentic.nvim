@@ -598,17 +598,16 @@ end
 function SessionManager:_handle_input_submit(input_text)
     self.todo_list:close_if_all_completed()
 
+    -- Intercept /new command BEFORE the generation guard so users can
+    -- escape a stuck state from the chat input
+    if input_text:match("^/new%s") or input_text:match("^/new$") then
+        self:new_session()
+        return true
+    end
+
     -- Guard: cannot submit if session not ready or generating
     if not self:can_submit_prompt() then
         return false
-    end
-
-    -- Intercept /new command to start new session locally, cancelling existing one
-    -- Its necessary to avoid race conditions and make sure everything is cleaned properly,
-    -- the Agent might not send an identifiable response that could be acted upon
-    if input_text:match("^/new%s*") then
-        self:new_session()
-        return true
     end
 
     --- @type agentic.acp.Content[]
@@ -779,6 +778,11 @@ function SessionManager:_handle_input_submit(input_text)
 
     self.agent:send_prompt(self.session_id, prompt, function(response, err)
         vim.schedule(function()
+            -- Guard: skip stale response if session changed (cancel/restore/new)
+            if self.session_id ~= session_id then
+                return
+            end
+
             self.is_generating = false
 
             local finish_message = string.format(
@@ -976,6 +980,8 @@ end
 
 function SessionManager:_cancel_session()
     self._is_restoring_session = false
+    self.is_generating = false
+    self.status_animation:stop()
 
     if self.session_id then
         -- only cancel and clear content if there was an session
