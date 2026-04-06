@@ -14,6 +14,7 @@ local NS_PERMISSION_BUTTONS =
 local NS_DIFF_HIGHLIGHTS =
     vim.api.nvim_create_namespace("agentic_diff_highlights")
 local NS_STATUS = vim.api.nvim_create_namespace("agentic_status_footer")
+local NS_THINKING = vim.api.nvim_create_namespace("agentic_thinking")
 
 --- @class agentic.ui.MessageWriter.HighlightRange
 --- @field type "comment"|"old"|"new"|"new_modification" Type of highlight to apply
@@ -47,6 +48,9 @@ local NS_STATUS = vim.api.nvim_create_namespace("agentic_status_footer")
 --- @field _last_sender? "user"|"agent"
 --- @field _provider_name? string
 --- @field _is_restoring boolean
+--- @field _thinking_extmark_id? integer
+--- @field _thinking_start_line? integer
+--- @field _thinking_end_line? integer
 local MessageWriter = {}
 MessageWriter.__index = MessageWriter
 
@@ -82,6 +86,15 @@ end
 --- Resets sender tracking so the next message writes a fresh header
 function MessageWriter:reset_sender_tracking()
     self._last_sender = nil
+    self:_clear_thinking_state()
+end
+
+--- Clears thinking block tracking state.
+--- Called when a non-thought write breaks the thinking flow.
+function MessageWriter:_clear_thinking_state()
+    self._thinking_extmark_id = nil
+    self._thinking_start_line = nil
+    self._thinking_end_line = nil
 end
 
 --- Writes a structural message (e.g. welcome banner) without triggering
@@ -179,6 +192,7 @@ function MessageWriter:write_message(update)
         return
     end
 
+    self:_clear_thinking_state()
     self:_auto_scroll(self.bufnr)
     self:_maybe_write_sender_header(update.sessionUpdate)
 
@@ -194,21 +208,44 @@ end
 --- Some ACP providers stream chunks instead of full messages
 --- @param update agentic.acp.SessionUpdateMessage
 function MessageWriter:write_message_chunk(update)
-    local text = update.content
-        and update.content.type == "text"
-        and update.content.text
-
-    if not text or text == "" then
+    if
+        not update.content
+        or update.content.type ~= "text"
+        or not update.content.text
+        or update.content.text == ""
+    then
         return
     end
 
+    local text = update.content.text
+
     self:_auto_scroll(self.bufnr)
+
+    local is_thought = update.sessionUpdate == "agent_thought_chunk"
+
+    -- Clear thinking state when leaving a thinking block
+    if not is_thought then
+        self:_clear_thinking_state()
+    end
+
+    -- Prepend emoji on first thought chunk of a block
+    if is_thought and not self._thinking_extmark_id then
+        text = "🧠 " .. text
+    end
 
     local header_written = self:_maybe_write_sender_header(update.sessionUpdate)
 
-    if header_written then
+    -- First thought chunk after non-thought output: start on a new line
+    -- so the thinking extmark doesn't recolor existing agent output
+    local thought_after_output = is_thought
+        and not self._thinking_extmark_id
+        and self._last_message_type
+        and self._last_message_type ~= "agent_thought_chunk"
+
+    if header_written or thought_after_output then
         -- The header's trailing blank line will be consumed by set_text below,
-        -- so prepend a newline to preserve spacing after the header
+        -- so prepend a newline to preserve spacing after the header.
+        -- Same for thought chunks that follow non-thought output.
         text = "\n" .. text
     elseif
         self._last_message_type == "agent_thought_chunk"
@@ -223,6 +260,12 @@ function MessageWriter:write_message_chunk(update)
 
     self:_with_modifiable_and_notify_change(function(bufnr)
         local last_line = vim.api.nvim_buf_line_count(bufnr) - 1
+
+        -- Capture start line before writing for new thinking blocks
+        local thinking_start = nil
+        if is_thought and not self._thinking_extmark_id then
+            thinking_start = last_line
+        end
 
         local current_line = vim.api.nvim_buf_get_lines(
             bufnr,
@@ -246,6 +289,27 @@ function MessageWriter:write_message_chunk(update)
 
         if not success then
             Logger.debug("Failed to set text in buffer", err, lines_to_write)
+            return false
+        end
+
+        -- Thinking extmark management
+        if is_thought then
+            if thinking_start then
+                -- First chunk: skip leading separator when a newline was
+                -- prepended (header written, or thought after non-thought output)
+                if header_written or thought_after_output then
+                    thinking_start = thinking_start + 1
+                end
+                self._thinking_start_line = thinking_start
+            end
+
+            local new_end_line = vim.api.nvim_buf_line_count(bufnr) - 1
+            self._thinking_end_line = new_end_line
+            self._thinking_extmark_id = self:_set_thinking_extmark(
+                self._thinking_start_line,
+                new_end_line,
+                self._thinking_extmark_id
+            )
         end
     end)
 end
@@ -320,6 +384,7 @@ end
 
 --- @param tool_call_block agentic.ui.MessageWriter.ToolCallBlock
 function MessageWriter:write_tool_call_block(tool_call_block)
+    self:_clear_thinking_state()
     self:_auto_scroll(self.bufnr)
     self:_maybe_write_sender_header("tool_call")
 
@@ -488,17 +553,13 @@ function MessageWriter:update_tool_call_block(tool_call_block)
             old_end_row + 1
         )
 
-        vim.schedule(function()
-            if vim.api.nvim_buf_is_valid(bufnr) then
-                self:_apply_block_highlights(
-                    bufnr,
-                    start_row,
-                    new_end_row,
-                    tracker.kind,
-                    highlight_ranges
-                )
-            end
-        end)
+        self:_apply_block_highlights(
+            bufnr,
+            start_row,
+            new_end_row,
+            tracker.kind,
+            highlight_ranges
+        )
 
         vim.api.nvim_buf_set_extmark(bufnr, NS_TOOL_BLOCKS, start_row, 0, {
             id = tracker.extmark_id,
@@ -842,13 +903,22 @@ function MessageWriter:replay_history_messages(messages)
         elseif msg.type == "agent" then
             self:write_message(ACPPayloads.generate_agent_message(msg.text))
         elseif msg.type == "thought" then
-            self:write_message({
-                sessionUpdate = "agent_thought_chunk",
-                content = {
-                    type = "text",
-                    text = msg.text,
-                },
-            })
+            self:_maybe_write_sender_header("agent_thought_chunk")
+
+            local text = "🧠 " .. msg.text
+            local lines = vim.split(text, "\n", { plain = true })
+            local start_line
+
+            self:_with_modifiable_and_notify_change(function(bufnr)
+                start_line = vim.api.nvim_buf_line_count(bufnr)
+                self:_append_lines(lines)
+                self:_append_lines({ "" })
+            end)
+
+            if start_line then
+                local end_line = start_line + #lines - 1
+                self:_set_thinking_extmark(start_line, end_line)
+            end
         elseif msg.type == "tool_call" then
             self:write_tool_call_block(msg)
         end
@@ -1002,6 +1072,34 @@ function MessageWriter:_apply_status_footer(footer_line, status)
         },
         virt_text_pos = "overlay",
     })
+end
+
+--- Sets or updates a thinking highlight extmark over the given line range.
+--- @param start_line integer
+--- @param end_line integer
+--- @param id integer|nil
+--- @return integer extmark_id
+function MessageWriter:_set_thinking_extmark(start_line, end_line, id)
+    local end_line_text = vim.api.nvim_buf_get_lines(
+        self.bufnr,
+        end_line,
+        end_line + 1,
+        false
+    )[1] or ""
+
+    return vim.api.nvim_buf_set_extmark(
+        self.bufnr,
+        NS_THINKING,
+        start_line,
+        0,
+        {
+            id = id,
+            hl_group = Theme.HL_GROUPS.THINKING,
+            end_row = end_line,
+            end_col = #end_line_text,
+            hl_eol = true,
+        }
+    )
 end
 
 --- @param ids integer[]|nil
