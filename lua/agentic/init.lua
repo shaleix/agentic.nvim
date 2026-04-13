@@ -30,6 +30,15 @@ function Agentic.close()
     end)
 end
 
+--- Opens the detached prompt/files floating window for the current tab page
+--- Safe to call multiple times
+--- @param opts agentic.ui.ChatWidget.ShowOpts|nil
+function Agentic.open_prompt_float(opts)
+    SessionRegistry.get_session_for_tab_page(nil, function(session)
+        session.widget:show_prompt_float(opts)
+    end)
+end
+
 --- Toggles the chat widget for the current tab page
 --- Safe to call multiple times
 --- @param opts agentic.ui.ChatWidget.ShowOpts|nil
