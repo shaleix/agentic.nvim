@@ -375,6 +375,9 @@ Configure the widget layout position and sizing:
       position = "right",  -- "right", "left", or "bottom"
       width = "40%",       -- Sidebar width (position = "right" or "left")
       height = "30%",      -- Panel height (position = "bottom")
+      detached_prompt = {
+        enabled = false,   -- Allow the detached Referenced Files + Prompt float API
+      },
     },
   },
 }
@@ -386,6 +389,8 @@ Configure the widget layout position and sizing:
   or absolute)
 - `height` - Panel height when `position = "bottom"` (percentage, decimal, or
   absolute)
+- `detached_prompt.enabled` - Enable the independent `open_prompt_float()`
+  API for the stacked `Referenced Files` + `Prompt` floating window
 
 ### Rotating Layouts dynamically at runtime
 
@@ -491,6 +496,7 @@ individual folds, or `zR`/`zM` to open/close all folds in the chat window.
 | `:lua require("agentic").toggle()`                           | Toggle chat sidebar                                               |
 | `:lua require("agentic").open()`                             | Open chat sidebar (keep open if already visible)                  |
 | `:lua require("agentic").close()`                            | Close chat sidebar                                                |
+| `:lua require("agentic").open_prompt_float()`                | Open detached Referenced Files + Prompt floating window           |
 | `:lua require("agentic").add_selection()`                    | Add visual selection to context                                   |
 | `:lua require("agentic").add_file()`                         | Add current file to context                                       |
 | `:lua require("agentic").add_selection_or_file_to_context()` | Add selection (if any) or file to the context                     |
@@ -514,6 +520,12 @@ Open and Toggle supports optional parameter:
 ```lua
 -- Open the chat without adding anything to context
 require("agentic").open({ auto_add_to_context = false })
+```
+
+`open_prompt_float(opts)` supports `focus_prompt` too:
+
+```lua
+require("agentic").open_prompt_float({ focus_prompt = true })
 ```
 
 When adding files or selections to context, you can also specify whether to

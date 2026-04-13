@@ -284,6 +284,11 @@ windows ~
   `height`             Height when position is `"bottom"`. String
                        percentage or number. Default: `"30%"`.
   `stack_width_ratio`  Ratio for stacked panels. Default: `0.4`.
+  `detached_prompt`    Enable the independent `Referenced Files` and
+                       `Prompt` floating window API.
+  `detached_prompt.enabled`
+                       Enable the detached prompt float.
+                       Default: `false`.
 
   Sub-panel options (each accepts `win_opts` table):
 
@@ -356,6 +361,14 @@ agentic.open({opts})
                                                        *agentic.close()*
 agentic.close()
   Close the chat sidebar for the current tabpage.
+
+                                           *agentic.open_prompt_float()*
+agentic.open_prompt_float({opts})
+  Open the detached `Referenced Files` + `Prompt` floating window for
+  the current tabpage.
+
+  Parameters: ~
+    {opts}  (table|nil)  Optional. `focus_prompt` (boolean).
 
                                                *agentic.add_selection()*
 agentic.add_selection({opts})

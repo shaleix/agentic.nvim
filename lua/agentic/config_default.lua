@@ -95,6 +95,9 @@
 --- @field max_height number
 --- @field win_opts? agentic.UserConfig.WinOpts
 
+--- @class agentic.UserConfig.Windows.DetachedPrompt
+--- @field enabled boolean
+
 --- @alias agentic.UserConfig.Windows.Position "right"|"left"|"bottom"
 
 --- @class agentic.UserConfig.Windows
@@ -108,6 +111,7 @@
 --- @field files agentic.UserConfig.Windows.Files
 --- @field diagnostics agentic.UserConfig.Windows.Diagnostics
 --- @field todos agentic.UserConfig.Windows.Todos
+--- @field detached_prompt agentic.UserConfig.Windows.DetachedPrompt
 
 --- @class agentic.UserConfig.SpinnerChars
 --- @field generating string[]
@@ -358,6 +362,7 @@ local ConfigDefault = {
         files = { max_height = 10, win_opts = {} },
         diagnostics = { max_height = 10, win_opts = {} },
         todos = { display = true, max_height = 10, win_opts = {} },
+        detached_prompt = { enabled = false },
     },
 
     keymaps = {

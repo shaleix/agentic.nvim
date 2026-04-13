@@ -3,6 +3,7 @@ local BufHelpers = require("agentic.utils.buf_helpers")
 local BufferGuard = require("agentic.ui.buffer_guard")
 local DiffPreview = require("agentic.ui.diff_preview")
 local Logger = require("agentic.utils.logger")
+local PromptFloat = require("agentic.ui.prompt_float")
 local WindowDecoration = require("agentic.ui.window_decoration")
 local WidgetLayout = require("agentic.ui.widget_layout")
 
@@ -39,6 +40,8 @@ local WidgetLayout = require("agentic.ui.widget_layout")
 --- @field win_nrs agentic.ui.ChatWidget.WinNrs
 --- @field current_position agentic.UserConfig.Windows.Position
 --- @field on_submit_input fun(prompt: string): boolean external callback to be called when user submits the input
+--- @field prompt_float agentic.ui.PromptFloat
+--- @field _bufwinleave_suppression_counts table<integer, integer>
 --- @field _guard_augroup? integer BufferGuard autocmd group ID
 --- @field _winclosed_augroup? integer WinClosed autocmd group ID
 --- @field _closing? boolean True during programmatic window closes
@@ -54,11 +57,15 @@ function ChatWidget:new(tab_page_id, on_submit_input)
 
     self.win_nrs = {}
     self.current_position = Config.windows.position
+    self._bufwinleave_suppression_counts = {}
 
     self.on_submit_input = on_submit_input
     self.tab_page_id = tab_page_id
 
     self:_initialize()
+    self.prompt_float = PromptFloat:new(tab_page_id, self.buf_nrs, function()
+        self:_close_prompt_float()
+    end)
     self:_bind_events_to_change_headers()
 
     return self
@@ -95,6 +102,7 @@ end
 --- @param opts agentic.ui.ChatWidget.ShowOpts|agentic.ui.ChatWidget.AddToContextOpts|nil
 function ChatWidget:show(opts)
     opts = opts or {}
+    local use_detached_prompt = Config.windows.detached_prompt.enabled
 
     self:_close_hidden_chat_window()
 
@@ -104,6 +112,8 @@ function ChatWidget:show(opts)
         win_nrs = self.win_nrs,
         focus_prompt = opts.focus_prompt,
         position = self.current_position,
+        show_input = not use_detached_prompt,
+        show_files = not use_detached_prompt,
     })
 end
 
@@ -230,6 +240,7 @@ function ChatWidget:destroy()
         not vim.tbl_contains(vim.api.nvim_list_tabpages(), self.tab_page_id)
 
     if not tab_closing then
+        self.prompt_float:close()
         self:hide()
     end
 
@@ -252,6 +263,8 @@ end
 
 function ChatWidget:_submit_input()
     vim.cmd("stopinsert")
+
+    local should_open_split_after_submit = self.prompt_float:is_open()
 
     local lines = vim.api.nvim_buf_get_lines(self.buf_nrs.input, 0, -1, false)
 
@@ -286,6 +299,12 @@ function ChatWidget:_submit_input()
     self:close_optional_window("code")
     self:close_optional_window("files")
     self:close_optional_window("diagnostics")
+
+    if should_open_split_after_submit then
+        self:_close_prompt_float()
+        self:show({ focus_prompt = false })
+    end
+
     -- Move cursor to chat buffer after submit for easy access to permission requests
     self:move_cursor_to(self.win_nrs.chat)
 end
@@ -363,6 +382,23 @@ function ChatWidget:_initialize()
     })
 end
 
+--- @param opts agentic.ui.ChatWidget.ShowOpts|nil
+function ChatWidget:show_prompt_float(opts)
+    opts = opts or {}
+
+    if not Config.windows.detached_prompt.enabled then
+        Logger.notify(
+            "Detached prompt float is disabled. Enable windows.detached_prompt.enabled to use it.",
+            vim.log.levels.WARN
+        )
+        return
+    end
+
+    self.prompt_float:open(
+        (opts.focus_prompt == nil and true or opts.focus_prompt) == true
+    )
+end
+
 function ChatWidget:_bind_keymaps()
     BufHelpers.multi_keymap_set(
         Config.keymaps.prompt.submit,
@@ -395,6 +431,20 @@ function ChatWidget:_bind_keymaps()
             Config.keymaps.widget.close,
             bufnr,
             function()
+                local current_winid = vim.api.nvim_get_current_win()
+                local input_float_winid = self.prompt_float:get_input_winid()
+                local files_float_winid = self.prompt_float:get_files_winid()
+
+                if current_winid == input_float_winid then
+                    self:_close_prompt_float()
+                    return
+                end
+
+                if current_winid == files_float_winid then
+                    self:_close_prompt_float()
+                    return
+                end
+
                 self:hide()
             end,
             { desc = "Agentic: Close Chat widget" }
@@ -426,8 +476,10 @@ function ChatWidget:_bind_keymaps()
                 "X",
             }) do
                 BufHelpers.keymap_set(bufnr, "n", key, function()
+                    local input_winid = self.prompt_float:get_input_winid()
+                        or self.win_nrs.input
                     self:move_cursor_to(
-                        self.win_nrs.input,
+                        input_winid,
                         BufHelpers.start_insert_on_last_char
                     )
                 end)
@@ -595,8 +647,60 @@ function ChatWidget:render_header(window_name, context)
     WindowDecoration.render_header(bufnr, window_name, context)
 end
 
+--- @param bufnr integer
+function ChatWidget:_suppress_next_bufwinleave(bufnr)
+    local current_count = self._bufwinleave_suppression_counts[bufnr] or 0
+    self._bufwinleave_suppression_counts[bufnr] = current_count + 1
+end
+
+--- @param bufnr integer
+--- @return boolean
+function ChatWidget:_consume_bufwinleave_suppression(bufnr)
+    local current_count = self._bufwinleave_suppression_counts[bufnr] or 0
+    if current_count <= 0 then
+        return false
+    end
+
+    if current_count == 1 then
+        self._bufwinleave_suppression_counts[bufnr] = nil
+    else
+        self._bufwinleave_suppression_counts[bufnr] = current_count - 1
+    end
+
+    return true
+end
+
+--- @param panel_name "files"|"input"
+function ChatWidget:_close_prompt_float_panel(panel_name)
+    local bufnr = self.buf_nrs[panel_name]
+    self:_suppress_next_bufwinleave(bufnr)
+    self.prompt_float:close_panel(panel_name)
+end
+
+function ChatWidget:_close_prompt_float()
+    if self.prompt_float:get_input_winid() then
+        self:_suppress_next_bufwinleave(self.buf_nrs.input)
+    end
+
+    if self.prompt_float:get_files_winid() then
+        self:_suppress_next_bufwinleave(self.buf_nrs.files)
+    end
+
+    self.prompt_float:close()
+end
+
 --- @param panel_name agentic.ui.ChatWidget.PanelNames
 function ChatWidget:close_optional_window(panel_name)
+    if self.prompt_float:is_open() and panel_name == "files" then
+        self:_close_prompt_float_panel("files")
+        return
+    end
+
+    if self.prompt_float:is_open() and panel_name == "input" then
+        self:_close_prompt_float_panel("input")
+        return
+    end
+
     self:_avoid_auto_close_cmd(function()
         WidgetLayout.close_optional_window(
             self.win_nrs,

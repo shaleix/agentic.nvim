@@ -12,6 +12,8 @@ local Logger = require("agentic.utils.logger")
 --- @field win_nrs agentic.ui.ChatWidget.WinNrs
 --- @field focus_prompt? boolean
 --- @field position agentic.UserConfig.Windows.Position
+--- @field show_input? boolean
+--- @field show_files? boolean
 
 --- @class agentic.ui.WidgetLayout
 local WidgetLayout = {}
@@ -213,8 +215,11 @@ local function show_layout(params, position)
     local is_bottom = position == "bottom"
     local win_nrs = params.win_nrs
     local buf_nrs = params.buf_nrs
+    local show_input = params.show_input ~= false
+    local show_files = params.show_files ~= false
     local should_focus = (
-        params.focus_prompt == nil and true or params.focus_prompt
+        show_input
+        and (params.focus_prompt == nil and true or params.focus_prompt)
     ) == true
 
     local split_direction = is_bottom and "below"
@@ -242,49 +247,67 @@ local function show_layout(params, position)
 
     Fold.setup_window(win_nrs.chat, buf_nrs.chat)
 
-    -- Input window: right splits below chat with height, bottom splits right
-    -- of chat with computed stack width
-    --- @type vim.api.keyset.win_config
-    local input_opts = { win = win_nrs.chat, fixed = true }
-    if is_bottom then
-        local chat_width = vim.api.nvim_win_get_width(win_nrs.chat)
-        local ratio = tonumber(Config.windows.stack_width_ratio) or 0.4
-        local raw_width = math.floor(chat_width * ratio)
-        input_opts.split = "right"
-        input_opts.width = math.max(1, math.min(raw_width, chat_width - 1))
+    if show_input then
+        -- Input window: right splits below chat with height, bottom splits right
+        -- of chat with computed stack width
+        --- @type vim.api.keyset.win_config
+        local input_opts = { win = win_nrs.chat, fixed = true }
+        if is_bottom then
+            local chat_width = vim.api.nvim_win_get_width(win_nrs.chat)
+            local ratio = tonumber(Config.windows.stack_width_ratio) or 0.4
+            local raw_width = math.floor(chat_width * ratio)
+            input_opts.split = "right"
+            input_opts.width = math.max(1, math.min(raw_width, chat_width - 1))
+        else
+            input_opts.split = "below"
+            input_opts.height = Config.windows.input.height
+        end
+
+        get_or_create_window(win_nrs, "input", buf_nrs.input, input_opts, {
+            winfixheight = not is_bottom,
+        })
     else
-        input_opts.split = "below"
-        input_opts.height = Config.windows.input.height
+        WidgetLayout.close_optional_window(win_nrs, "input", position)
     end
 
-    get_or_create_window(win_nrs, "input", buf_nrs.input, input_opts, {
-        winfixheight = not is_bottom,
-    })
+    local code_ref_win = is_bottom
+            and (show_input and win_nrs.input or win_nrs.chat)
+        or win_nrs.chat
 
     open_or_resize_dynamic_window(buf_nrs, win_nrs, "code", {
-        win = is_bottom and win_nrs.input or win_nrs.chat,
+        win = code_ref_win,
         split = "below",
     }, Config.windows.code.max_height, position)
 
-    local ref_win = is_bottom and (win_nrs.code or win_nrs.input)
-        or win_nrs.input
+    local diagnostics_ref_win
+    if show_files then
+        local ref_win = is_bottom
+                and (win_nrs.code or (show_input and win_nrs.input) or win_nrs.chat)
+            or (show_input and win_nrs.input or win_nrs.chat)
 
-    open_or_resize_dynamic_window(buf_nrs, win_nrs, "files", {
-        win = ref_win,
-        split = is_bottom and "below" or "above",
-    }, Config.windows.files.max_height, position)
+        open_or_resize_dynamic_window(buf_nrs, win_nrs, "files", {
+            win = ref_win,
+            split = is_bottom and "below" or "above",
+        }, Config.windows.files.max_height, position)
 
-    ref_win = is_bottom and (win_nrs.files or win_nrs.code or win_nrs.input)
-        or win_nrs.input
+        diagnostics_ref_win = is_bottom
+                and (win_nrs.files or win_nrs.code or (show_input and win_nrs.input) or win_nrs.chat)
+            or (show_input and win_nrs.input or win_nrs.chat)
+    else
+        WidgetLayout.close_optional_window(win_nrs, "files", position)
+        diagnostics_ref_win = is_bottom
+                and (win_nrs.code or (show_input and win_nrs.input) or win_nrs.chat)
+            or (win_nrs.code or win_nrs.chat)
+    end
 
     open_or_resize_dynamic_window(buf_nrs, win_nrs, "diagnostics", {
-        win = ref_win,
-        split = is_bottom and "below" or "above",
+        win = diagnostics_ref_win,
+        split = "below",
     }, Config.windows.diagnostics.max_height, position)
 
     if Config.windows.todos.display then
-        ref_win = is_bottom
-                and (win_nrs.diagnostics or win_nrs.files or win_nrs.code or win_nrs.input)
+        local ref_win = is_bottom
+                and (win_nrs.diagnostics or win_nrs.files or win_nrs.code or win_nrs.input or win_nrs.chat)
             or win_nrs.chat
 
         open_or_resize_dynamic_window(buf_nrs, win_nrs, "todos", {
