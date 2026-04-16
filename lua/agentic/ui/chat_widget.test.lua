@@ -201,6 +201,128 @@ describe("agentic.ui.ChatWidget", function()
                 end
             end)
 
+            describe("sticky windows", function()
+                it("redirects :edit to editor window", function()
+                    widget:show()
+
+                    local chat_win = widget.win_nrs.chat
+
+                    vim.api.nvim_set_current_win(chat_win)
+
+                    local tmpfile = vim.fn.tempname() .. ".lua"
+                    vim.fn.writefile({ "-- test" }, tmpfile)
+
+                    vim.cmd("edit " .. vim.fn.fnameescape(tmpfile))
+
+                    -- Chat window does not contain the temp file
+                    -- (guard either restored chat_buf or replaced it with a
+                    -- fresh scratch buffer to keep the window clean)
+                    local buf_in_chat = vim.api.nvim_win_get_buf(chat_win)
+                    local name_in_chat = vim.api.nvim_buf_get_name(buf_in_chat)
+                    local resolved_in_chat = vim.fn.resolve(name_in_chat)
+                    local resolved_tmpfile = vim.fn.resolve(tmpfile)
+                    assert.are_not.equal(resolved_tmpfile, resolved_in_chat)
+
+                    -- The temp file is open in some non-widget window on the same tabpage
+                    local found_in_non_widget = false
+                    local all_wins = vim.api.nvim_tabpage_list_wins(tab_page_id)
+                    local widget_win_ids = {}
+                    for _, wid in pairs(widget.win_nrs) do
+                        if wid then
+                            widget_win_ids[wid] = true
+                        end
+                    end
+                    for _, wid in ipairs(all_wins) do
+                        if not widget_win_ids[wid] then
+                            local buf = vim.api.nvim_win_get_buf(wid)
+                            local name = vim.api.nvim_buf_get_name(buf)
+                            if vim.fn.resolve(name) == resolved_tmpfile then
+                                found_in_non_widget = true
+                            end
+                        end
+                    end
+                    os.remove(tmpfile)
+                    assert.is_true(found_in_non_widget)
+                end)
+
+                it(
+                    "does not interfere with normal widget buffer changes",
+                    function()
+                        widget:show()
+
+                        local chat_win = widget.win_nrs.chat
+                        local input_win = widget.win_nrs.input
+                        local chat_buf = widget.buf_nrs.chat
+                        local input_buf = widget.buf_nrs.input
+
+                        -- Swap: put input_buf into chat_win (a widget buffer,
+                        -- but the WRONG one for this window).
+                        vim.api.nvim_set_current_win(chat_win)
+                        vim.api.nvim_win_set_buf(chat_win, input_buf)
+
+                        -- Guard should have restored the correct buffer
+                        assert.equal(
+                            chat_buf,
+                            vim.api.nvim_win_get_buf(chat_win)
+                        )
+                        -- Input window should be unaffected
+                        assert.equal(
+                            input_buf,
+                            vim.api.nvim_win_get_buf(input_win)
+                        )
+                    end
+                )
+
+                it("guard is cleaned up after destroy", function()
+                    widget:show()
+                    widget:destroy()
+
+                    assert.is_nil(widget._guard_augroup)
+
+                    -- Prevent double-destroy in after_each
+                    widget = nil
+                end)
+
+                it(
+                    "skips floating windows in find_first_non_widget_window",
+                    function()
+                        widget:show()
+
+                        -- Close all non-widget windows on the tabpage
+                        local all_wins =
+                            vim.api.nvim_tabpage_list_wins(tab_page_id)
+                        local widget_win_ids = {}
+                        for _, wid in pairs(widget.win_nrs) do
+                            if wid then
+                                widget_win_ids[wid] = true
+                            end
+                        end
+                        for _, wid in ipairs(all_wins) do
+                            if not widget_win_ids[wid] then
+                                pcall(vim.api.nvim_win_close, wid, true)
+                            end
+                        end
+
+                        -- Create a floating window
+                        local float_buf = vim.api.nvim_create_buf(false, true)
+                        local float_win =
+                            vim.api.nvim_open_win(float_buf, false, {
+                                relative = "editor",
+                                width = 10,
+                                height = 3,
+                                row = 1,
+                                col = 1,
+                            })
+
+                        local result = widget:find_first_non_widget_window()
+                        assert.is_nil(result)
+                        -- Clean up floating window and buffer
+                        vim.api.nvim_win_close(float_win, true)
+                        vim.api.nvim_buf_delete(float_buf, { force = true })
+                    end
+                )
+            end)
+
             it("hide() closes all dynamic windows when they exist", function()
                 for _, name in ipairs({ "files", "code", "todos" }) do
                     fill_buffer(widget, name, { "content" })
@@ -335,6 +457,106 @@ describe("agentic.ui.ChatWidget", function()
                         vim.api.nvim_win_is_valid(widget.win_nrs.code)
                     )
                 end)
+            end)
+
+            describe("WinClosed autocmd", function()
+                -- _closing is set synchronously by the WinClosed handler
+                -- and only reset inside vim.schedule (which doesn't run
+                -- in same-process tests). So _closing == true means the
+                -- handler matched and scheduled hide().
+
+                it(
+                    "close_optional_window does not trigger WinClosed handler",
+                    function()
+                        fill_buffer(widget, "code", { "line1" })
+                        fill_buffer(widget, "files", { "file.lua" })
+
+                        widget:show()
+                        assert.is_not_nil(widget.win_nrs.code)
+                        assert.is_not_nil(widget.win_nrs.files)
+
+                        widget:close_optional_window("code")
+
+                        -- Code window is gone
+                        assert.is_nil(widget.win_nrs.code)
+                        -- WinClosed handler did NOT schedule hide()
+                        assert.is_false(widget._closing)
+                        -- Core windows still exist
+                        assert.is_true(
+                            vim.api.nvim_win_is_valid(widget.win_nrs.chat)
+                        )
+                        assert.is_true(
+                            vim.api.nvim_win_is_valid(widget.win_nrs.input)
+                        )
+                    end
+                )
+
+                it(
+                    "close_optional_window for files does not trigger WinClosed handler",
+                    function()
+                        fill_buffer(widget, "files", { "file.lua" })
+
+                        widget:show()
+                        assert.is_not_nil(widget.win_nrs.files)
+
+                        widget:close_optional_window("files")
+
+                        assert.is_nil(widget.win_nrs.files)
+                        assert.is_false(widget._closing)
+                        assert.is_true(
+                            vim.api.nvim_win_is_valid(widget.win_nrs.chat)
+                        )
+                        assert.is_true(
+                            vim.api.nvim_win_is_valid(widget.win_nrs.input)
+                        )
+                    end
+                )
+
+                it(
+                    "close_optional_window for diagnostics does not trigger WinClosed handler",
+                    function()
+                        fill_buffer(
+                            widget,
+                            "diagnostics",
+                            { "diagnostic info" }
+                        )
+
+                        widget:show()
+                        assert.is_not_nil(widget.win_nrs.diagnostics)
+
+                        widget:close_optional_window("diagnostics")
+
+                        assert.is_nil(widget.win_nrs.diagnostics)
+                        assert.is_false(widget._closing)
+                        assert.is_true(
+                            vim.api.nvim_win_is_valid(widget.win_nrs.chat)
+                        )
+                        assert.is_true(
+                            vim.api.nvim_win_is_valid(widget.win_nrs.input)
+                        )
+                    end
+                )
+
+                it(
+                    "close_optional_window for todos does not trigger WinClosed handler",
+                    function()
+                        fill_buffer(widget, "todos", { "- [ ] task" })
+
+                        widget:show()
+                        assert.is_not_nil(widget.win_nrs.todos)
+
+                        widget:close_optional_window("todos")
+
+                        assert.is_nil(widget.win_nrs.todos)
+                        assert.is_false(widget._closing)
+                        assert.is_true(
+                            vim.api.nvim_win_is_valid(widget.win_nrs.chat)
+                        )
+                        assert.is_true(
+                            vim.api.nvim_win_is_valid(widget.win_nrs.input)
+                        )
+                    end
+                )
             end)
         end)
     end
