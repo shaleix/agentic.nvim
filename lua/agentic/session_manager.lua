@@ -27,8 +27,8 @@ local FILE_MUTATING_KINDS = {
 }
 
 --- Safely invoke a user-configured hook
---- @param hook_name "on_prompt_submit" | "on_response_complete" | "on_session_update"
---- @param data table
+--- @param hook_name "on_prompt_submit" | "on_response_complete" | "on_session_update" | "on_file_edit"
+--- @param data agentic.UserConfig.PromptSubmitData | agentic.UserConfig.ResponseCompleteData | agentic.UserConfig.SessionUpdateData | agentic.UserConfig.FileEditData
 function P.invoke_hook(hook_name, data)
     local hook = Config.hooks and Config.hooks[hook_name]
 
@@ -386,13 +386,21 @@ function SessionManager:_on_session_update(update)
         )
     end
 
+    -- Skip the hook during restore replay: the provider re-emits historical
+    -- updates and users expect hooks to reflect live activity.
+    if self._is_restoring_session then
+        return
+    end
+
     -- This is being done after handling specific updates but one could argue
     -- there should be pre/post hooks for everything.
-    P.invoke_hook("on_session_update", {
+    --- @type agentic.UserConfig.SessionUpdateData
+    local hook_data = {
         session_id = self.session_id,
         tab_page_id = self.tab_page_id,
         update = update,
-    })
+    }
+    P.invoke_hook("on_session_update", hook_data)
 end
 
 --- @param tool_call agentic.ui.MessageWriter.ToolCallBlock
@@ -459,6 +467,31 @@ function SessionManager:_on_tool_call_update(tool_call_update)
             vim.cmd.checktime()
 
             DiffPreview.cleanup_suggestion_buffer(tracker.file_path)
+
+            -- Skip the hook during restore replay: the provider replays
+            -- historical tool calls as "completed" but no write happened now.
+            if
+                not self._is_restoring_session
+                and type(tracker.file_path) == "string"
+                and tracker.file_path ~= ""
+            then
+                local abs_path = FileSystem.to_absolute_path(tracker.file_path)
+                local raw_bufnr = vim.fn.bufnr(abs_path)
+                --- @type number|nil
+                local bufnr = (
+                    raw_bufnr ~= -1 and vim.api.nvim_buf_is_loaded(raw_bufnr)
+                )
+                        and raw_bufnr
+                    or nil
+                --- @type agentic.UserConfig.FileEditData
+                local hook_data = {
+                    filepath = abs_path,
+                    session_id = self.session_id,
+                    tab_page_id = self.tab_page_id,
+                    bufnr = bufnr,
+                }
+                P.invoke_hook("on_file_edit", hook_data)
+            end
         end
     end
 
@@ -782,11 +815,13 @@ function SessionManager:_handle_input_submit(input_text)
 
     self.status_animation:start("thinking")
 
-    P.invoke_hook("on_prompt_submit", {
+    --- @type agentic.UserConfig.PromptSubmitData
+    local prompt_hook_data = {
         prompt = input_text,
         session_id = self.session_id,
         tab_page_id = self.tab_page_id,
-    })
+    }
+    P.invoke_hook("on_prompt_submit", prompt_hook_data)
 
     local session_id = self.session_id
     local tab_page_id = self.tab_page_id
@@ -829,12 +864,14 @@ function SessionManager:_handle_input_submit(input_text)
 
             self.status_animation:stop()
 
-            P.invoke_hook("on_response_complete", {
-                session_id = session_id,
+            --- @type agentic.UserConfig.ResponseCompleteData
+            local response_hook_data = {
+                session_id = session_id --[[@as string]],
                 tab_page_id = tab_page_id,
                 success = err == nil,
                 error = err,
-            })
+            }
+            P.invoke_hook("on_response_complete", response_hook_data)
         end)
     end)
 
