@@ -36,6 +36,9 @@ describe("agentic.ui.MessageWriter", function()
 
     after_each(function()
         Config.auto_scroll = original_auto_scroll --- @diagnostic disable-line: assign-type-mismatch
+        if writer then
+            writer:destroy()
+        end
         if winid and vim.api.nvim_win_is_valid(winid) then
             vim.api.nvim_win_close(winid, true)
         end
@@ -885,5 +888,200 @@ describe("agentic.ui.MessageWriter", function()
                 assert.is_true(has_comment_hl)
             end
         )
+    end)
+
+    describe("_get_fold_geometry", function()
+        --- @type agentic.UserConfig.Folding|nil
+        local saved_folding
+
+        before_each(function()
+            saved_folding = Config.folding
+        end)
+
+        after_each(function()
+            Config.folding = saved_folding --- @diagnostic disable-line: assign-type-mismatch
+        end)
+
+        --- @param body_count integer
+        --- @param is_diff boolean
+        local function seed_block(body_count, is_diff)
+            -- Buffer: HEADER + body_count lines + blank footer
+            local lines = { "HEADER" }
+            for i = 1, body_count do
+                table.insert(lines, "b" .. i)
+            end
+            table.insert(lines, "")
+            vim.api.nvim_buf_set_lines(writer.bufnr, 0, -1, false, lines)
+
+            local NS = vim.api.nvim_create_namespace("agentic_tool_blocks")
+            local ext_id = vim.api.nvim_buf_set_extmark(
+                writer.bufnr,
+                NS,
+                0,
+                0,
+                { end_row = body_count + 1, right_gravity = false }
+            )
+            writer.tool_call_blocks["t1"] = {
+                tool_call_id = "t1",
+                extmark_id = ext_id,
+                diff = is_diff and { old = {}, new = {} } or nil,
+            }
+        end
+
+        --- @class FoldGeometryCase
+        --- @field name string
+        --- @field enabled boolean
+        --- @field threshold integer
+        --- @field body_count integer
+        --- @field is_diff boolean
+        --- @field expect_empty? boolean
+        --- @field expect_foldable? boolean
+
+        --- @type FoldGeometryCase[]
+        local cases = {
+            {
+                name = "returns empty when folding disabled",
+                enabled = false,
+                threshold = 10,
+                body_count = 50,
+                is_diff = false,
+                expect_empty = true,
+            },
+            {
+                name = "foldable=true when interior > threshold",
+                enabled = true,
+                threshold = 10,
+                body_count = 11,
+                is_diff = false,
+                expect_foldable = true,
+            },
+            {
+                name = "foldable=false when interior == threshold",
+                enabled = true,
+                threshold = 10,
+                body_count = 10,
+                is_diff = false,
+                expect_foldable = false,
+            },
+            {
+                name = "threshold=0 folds any block with interior >= 1",
+                enabled = true,
+                threshold = 0,
+                body_count = 1,
+                is_diff = false,
+                expect_foldable = true,
+            },
+            {
+                name = "threshold=0 does not fold empty body",
+                enabled = true,
+                threshold = 0,
+                body_count = 0,
+                is_diff = false,
+                expect_foldable = false,
+            },
+            {
+                name = "clamps negative threshold to 0",
+                enabled = true,
+                threshold = -5,
+                body_count = 1,
+                is_diff = false,
+                expect_foldable = true,
+            },
+            {
+                name = "never folds a diff block regardless of size",
+                enabled = true,
+                threshold = 0,
+                body_count = 100,
+                is_diff = true,
+                expect_foldable = false,
+            },
+        }
+
+        for _, case in ipairs(cases) do
+            it(case.name, function()
+                Config.folding = {
+                    tool_calls = {
+                        enabled = case.enabled,
+                        threshold = case.threshold,
+                    },
+                }
+                seed_block(case.body_count, case.is_diff)
+
+                local geo = writer:_get_fold_geometry()
+
+                if case.expect_empty then
+                    assert.same(geo, {})
+                else
+                    assert.equal(#geo, 1)
+                    assert.equal(geo[1].foldable, case.expect_foldable)
+                end
+            end)
+        end
+    end)
+
+    describe("Fold integration", function()
+        local Fold = require("agentic.ui.tool_call_fold")
+        --- @type agentic.UserConfig.Folding|nil
+        local saved_folding
+
+        before_each(function()
+            saved_folding = Config.folding
+        end)
+
+        after_each(function()
+            Config.folding = saved_folding --- @diagnostic disable-line: assign-type-mismatch
+        end)
+
+        --- @return integer bufnr, agentic.ui.MessageWriter writer
+        local function make_writer()
+            local b = vim.api.nvim_create_buf(false, true)
+            local w = require("agentic.ui.message_writer"):new(b)
+            return b, w
+        end
+
+        it("registers a getter on construction", function()
+            local test_bufnr, test_writer = make_writer()
+
+            Config.folding = {
+                tool_calls = { enabled = true, threshold = 0 },
+            }
+
+            local NS = vim.api.nvim_create_namespace("agentic_tool_blocks")
+            vim.api.nvim_buf_set_lines(
+                test_bufnr,
+                0,
+                -1,
+                false,
+                { "H", "b1", "b2", "" }
+            )
+            local ext_id = vim.api.nvim_buf_set_extmark(
+                test_bufnr,
+                NS,
+                0,
+                0,
+                { end_row = 3, right_gravity = false }
+            )
+            test_writer.tool_call_blocks["t1"] =
+                { tool_call_id = "t1", extmark_id = ext_id }
+
+            -- If registration happened, foldexpr returns 1 for an interior
+            -- line (line 2 in 1-indexed).
+            assert.equal(Fold.foldexpr(test_bufnr, 2), 1)
+
+            Fold.unregister(test_bufnr)
+            vim.api.nvim_buf_delete(test_bufnr, { force = true })
+        end)
+
+        it("unregisters on destroy", function()
+            local test_bufnr, test_writer = make_writer()
+
+            test_writer:destroy()
+
+            assert.equal(Fold.foldexpr(test_bufnr, 5), 0)
+
+            if vim.api.nvim_buf_is_valid(test_bufnr) then
+                vim.api.nvim_buf_delete(test_bufnr, { force = true })
+            end
+        end)
     end)
 end)
