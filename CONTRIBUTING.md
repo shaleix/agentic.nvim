@@ -1,198 +1,102 @@
-# Contributing with OpenSpec
+# Contributing
 
-This project uses [OpenSpec](https://github.com/Fission-AI/OpenSpec) to manage
-feature proposals, implementation tracking, and living documentation.
+**Always open PRs as draft.** CodeRabbit runs on every push to non-draft PRs
+and hits rate limits on iteration. Flip to ready when the branch is
+stable
 
-## Commands
+- Fill in the description with **what** changed and **why**
+- Link related issues
+- The repo squashes at merge, so the final title + description matter
+  more than per-commit hygiene
 
-| Command                  | Purpose                                     |
-| ------------------------ | ------------------------------------------- |
-| `/openspec:proposal`     | Start a new change (no code, design only)   |
-| `/openspec:apply`        | Implement an approved proposal (code phase) |
-| `/openspec:archive`      | Finalize and merge completed work           |
-| `openspec list`          | View active changes                         |
-| `openspec list --specs`  | View current specs (source of truth)        |
-| `openspec show <id>`     | Inspect proposal, tasks, and spec deltas    |
-| `openspec validate <id>` | Check spec formatting and structure         |
-| `openspec update`        | Refresh agent instructions after changes    |
+## Before Opening a PR
 
-## Workflow
+**Just send the PR:**
 
-```text
-  /openspec:proposal
-         │
-         ▼
-  ┌─────────────┐
-  │  PROPOSAL   │◀────────────┐
-  │  (design)   │             │
-  └─────────────┘             │
-         │                    │ keep chatting
-         │ satisfied?────no───┘
-         │
-        yes
-         │
-  /openspec:apply
-         │
-         ▼
-  ┌─────────────┐
-  │    APPLY    │◀────────────┐
-  │   (code)    │             │
-  └─────────────┘             │
-         │                    │ keep chatting
-         │ all done?─────no───┘
-         │                    │
-        yes                   │
-         │                    │
-         ▼                    │
-  ┌─────────────┐             │
-  │   TEST IT   │             │
-  └─────────────┘             │
-         │                    │
-         │ pass?─────────no───┘
-         │
-        yes
-         │
-  /openspec:archive
-         │
-         ▼
-  ┌─────────────┐
-  │   ARCHIVE   │
-  │   (merge)   │
-  └─────────────┘
-```
+- Bug fixes, including regressions
+- Typos, comment edits, doc fixes
+- Tightening existing code without changing behavior
+- Adding tests for already-shipped behavior
 
-### When to Use Each Stage
+**Open a [discussion](https://github.com/carlos-algms/agentic.nvim/discussions) (or issue) first:**
 
-| Scenario                             | Action                                   |
-| ------------------------------------ | ---------------------------------------- |
-| New feature, breaking change         | `/openspec:proposal` → iterate → approve |
-| Architecture shift, security changes | `/openspec:proposal` → iterate → approve |
-| Bug fix, typo, minor config tweak    | Direct edit (skip proposal)              |
-| Test additions, copy updates         | Direct edit (skip proposal)              |
-| Approved proposal ready              | `/openspec:apply`                        |
-| Implementation complete and tested   | `/openspec:archive`                      |
+- Anything that adds a new user-facing feature or config option
+- Changes to the chat UI layout, keymaps, or public API
+- Onboarding a brand-new ACP provider
+- Refactors that span more than a couple of modules
 
-### 1. Proposal Stage (No Code)
+If in doubt, ask first
 
-**Goal:** Lock intent before implementation. Clarify the "What" and "Why".
+### Scope & Design Preferences
 
-**The dev:**
+- **One PR, one concern.** Split unrelated changes into separate PRs
+- **Autocommands are a last resort.** Prefer direct calls, explicit hooks,
+  or buffer-local keymaps. If an `autocmd` is the right tool, justify it
+  in the PR
+- **No provider-specific hacks.** ACP is a standard
+  ([spec](https://agentclientprotocol.com/)); `if provider == "foo"`
+  branches get rejected - report provider bugs upstream. Only exception:
+  documented fallbacks in `ACPClient` for fields missing from the spec
+  (see `lua/agentic/acp/AGENTS.md` -> "Provider quirk handling")
 
-1. Describes what needs to change
-2. Asks clarifying questions if ambiguous ("What should happen when X?")
-3. Reviews generated `proposal.md`, `tasks.md`, spec deltas
-4. Requests refinements until satisfied
+## Prerequisites
 
-**Iterate by telling the agent:**
+- Neovim **v0.11.5+** (LuaJIT 2.1, Lua 5.1 semantics)
+- [`stylua`](https://github.com/JohnnyMorganz/StyLua),
+  [`selene`](https://github.com/Kampfkarren/selene),
+  [`lua-language-server`](https://github.com/LuaLS/lua-language-server)
+- `make`, `git`
 
-- "Add acceptance criteria for the role filter"
-- "Update the spec delta with error handling scenarios"
-- "Break this task into smaller steps"
-- "What happens in edge case X?"
+## Getting Started
 
-**Done when:**
+1. Fork, clone, branch from `main` (never commit to `main`):
 
-- `openspec validate <id> --strict` passes
-- The dev is satisfied with the proposal
+   ```bash
+   git checkout -b feat/my-new-thing
+   ```
 
-**To approve:** Run `/openspec:apply` or tell the agent "Apply `<id>`". There's
-no separate approval command — running apply signals approval.
+2. Make your changes
+3. If your changes include `.lua` files, run `make validate` (stylua +
+   lua-language-server + selene + tests). See `AGENTS.md` for the scoping
+   rule.
 
-### 2. Apply Stage (Code Phase)
+## Commit Messages
 
-**Goal:** Implement exactly what was approved.
+Uses [Conventional Commits](https://www.conventionalcommits.org/):
+`<type>(<optional-scope>): <subject>`
 
-**The agent:**
-
-- Reads `proposal.md`, `design.md`, `tasks.md`
-- Implements tasks sequentially
-- Marks tasks `[x]` as completed
-- Stays within approved scope
-
-**The dev:**
-
-- Reviews code changes as they happen
-- Flags deviations from the proposal
-- Requests corrections if needed
-
-### 3. Archive Stage (Cleanup)
-
-**Goal:** Merge spec deltas into canonical specs.
-
-Run after implementation is complete and tested. The CLI:
-
-- Moves change to `changes/archive/`
-- Applies spec deltas to `openspec/specs/`
-
-## Refining Before Apply
-
-The proposal stage supports iteration. The dev can refine indefinitely before
-approving.
-
-**To go deeper:**
+Scopes are optional. Examples: `feat(acp)`, `fix(ui)`, `refactor(acp)`,
+`chore(tests)`
 
 ```text
-"Add more scenarios for error handling"
-"What are the edge cases for concurrent access?"
-"Include a design.md explaining the architecture decision"
-"Break down task 3 into subtasks"
+feat: add side-by-side diff view
+fix(acp): handle empty tool call body
+refactor: extract hunk navigation to module
+chore: bump selene to 0.27
 ```
 
-**To clarify requirements:**
+## Using AI Tools on Your PR
 
-```text
-"What should happen when the user cancels mid-operation?"
-"Define the expected behavior for invalid input"
-"Add a scenario for the empty state"
-```
+Using AI is allowed and encouraged; however, PRs that are entirely generated
+by AI are not welcome.
 
-**To simplify:**
+Watch out for:
 
-```text
-"Remove the optional caching feature for now"
-"Scope this to only handle the happy path initially"
-```
+- **Self-review every line** See self-review section
+- **Reply to reviewers yourself**, not with a model re-roll. Understand
+  your diff well enough to discuss it
+- **Follow TDD even when the model wrote the fix.** A red test on current
+  code proves the bug; a test written after the fix usually proves
+  nothing
 
-## Recovery After Agent Restart
+The PR has your name on it - be ready to defend every line
 
-### Mid-Proposal
+## Self-Review Before Marking PR Ready for Review
 
-```bash
-openspec list                    # Find active changes
-openspec show <id>               # Review current state
-```
-
-Then: "Continue refining proposal `<id>`"
-
-### Mid-Apply
-
-```bash
-openspec list                    # Find in-progress change
-openspec show <id>               # See tasks and completion status
-```
-
-Then: "Continue applying `<id>` from the first incomplete task"
-
-### Mid-Archive
-
-```bash
-openspec list                    # Check if change still exists
-```
-
-- If exists: run `/openspec:archive` again
-- If gone: verify with `openspec list --specs`
-
-## Best Practices
-
-- **1-2 clarifying questions** before scaffolding when ambiguous
-- **Read context first:** `openspec/project.md`, relevant specs
-- **Validate early:** run `openspec validate <id> --strict` before approving
-- **One change, one concern:** keep proposals focused
-- **Archive promptly:** don't let completed changes linger
-
-## Sources
-
-- [OpenSpec GitHub](https://github.com/Fission-AI/OpenSpec)
-- [OpenSpec Workflow Concepts](https://thedocs.io/openspec/concepts/workflow/)
-- [OpenSpec Deep Dive Guide](https://redreamality.com/garden/notes/openspec-guide/)
-- [OpenSpec + Claude Code Process](https://www.vibesparking.com/en/blog/ai/openspec/2025-10-17-openspec-claude-code-dev-process/)
+1. Read your own diff on GitHub
+2. `make validate` passes cleanly
+3. If you changed `lua/agentic/init.lua`, `config_default.lua`,
+   `theme.lua`, or public keymaps in the README, update `doc/agentic.txt`
+   (see `AGENTS.md` for the source-to-vimdoc mapping)
+4. If you added a highlight group, update the README "Customization
+   (Ricing)" section and `doc/agentic.txt`
