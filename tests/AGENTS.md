@@ -40,6 +40,14 @@
 2. **Green:** Replace the stub with the real implementation, minimal code
    to turn the test green.
 3. Run the full suite (`make validate`) to confirm nothing else broke.
+4. **Mark count check (MANDATORY):** After adding or modifying tests,
+   run `make test` and verify the reported marks for the changed file
+   match the number of `it()` blocks in the source. Loop-expanded
+   `it()` (e.g. `for _, case in ipairs(cases) do it(...) end`)
+   multiplies the expected count accordingly. A mismatch means a test
+   silently disappeared, usually from an assertion escaping `pcall`
+   via `vim.schedule` / `vim.wait` (see "Async Code in Same-Process
+   Tests" below). Fix the mismatch before moving on.
 
 Do NOT skip step 1. Writing the fix first and the test after it passes
 produces tests that shape themselves around the fix rather than catching
