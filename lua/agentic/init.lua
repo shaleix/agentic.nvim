@@ -39,6 +39,14 @@ function Agentic.open_prompt_float(opts)
     end)
 end
 
+--- Opens the prompt history floating window for the current tab page
+--- Safe to call multiple times
+function Agentic.open_prompt_history()
+    SessionRegistry.get_session_for_tab_page(nil, function(session)
+        session.widget:show_prompt_history()
+    end)
+end
+
 --- Toggles the chat widget for the current tab page
 --- Safe to call multiple times
 --- @param opts agentic.ui.ChatWidget.ShowOpts|nil

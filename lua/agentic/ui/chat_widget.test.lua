@@ -953,4 +953,107 @@ describe("agentic.ui.ChatWidget", function()
             assert.is_true(vim.api.nvim_win_is_valid(widget._hidden_chat_winid))
         end)
     end)
+    describe("detached prompt float", function()
+        local widget
+        local original_position
+        local original_detached
+
+        before_each(function()
+            original_position = Config.windows.position
+            original_detached = Config.windows.detached_prompt.enabled
+            Config.windows.position = "right"
+            Config.windows.detached_prompt.enabled = true
+
+            vim.cmd("tabnew")
+
+            local on_submit_spy = spy.new(function() end)
+            widget = ChatWidget:new(
+                vim.api.nvim_get_current_tabpage(),
+                on_submit_spy --[[@as function]]
+            )
+        end)
+
+        after_each(function()
+            if widget then
+                pcall(function()
+                    widget:destroy()
+                end)
+            end
+            pcall(function()
+                vim.cmd("tabclose")
+            end)
+
+            Config.windows.position = original_position
+            Config.windows.detached_prompt.enabled = original_detached
+        end)
+
+        it("show() hides prompt and files from the split layout", function()
+            widget:show()
+
+            assert.is_true(vim.api.nvim_win_is_valid(widget.win_nrs.chat))
+            assert.is_nil(widget.win_nrs.input)
+            assert.is_nil(widget.win_nrs.files)
+            assert.is_nil(widget.prompt_float:get_input_winid())
+        end)
+
+        it(
+            "show_prompt_float opens an independent detached prompt float",
+            function()
+                widget:show({ focus_prompt = false })
+                widget:show_prompt_float({ focus_prompt = false })
+
+                assert.is_true(vim.api.nvim_win_is_valid(widget.win_nrs.chat))
+                assert.is_nil(widget.win_nrs.input)
+                assert.is_true(
+                    vim.api.nvim_win_is_valid(
+                        widget.prompt_float:get_input_winid()
+                    )
+                )
+                assert.equal(
+                    "editor",
+                    vim.api.nvim_win_get_config(
+                        widget.prompt_float:get_input_winid()
+                    ).relative
+                )
+            end
+        )
+
+        it(
+            "shows referenced files above the detached prompt float when populated",
+            function()
+                fill_buffer(widget, "files", { "file1.lua", "file2.lua" })
+
+                assert.has_no_errors(function()
+                    widget:show_prompt_float({ focus_prompt = false })
+                end)
+
+                assert.is_true(
+                    vim.api.nvim_win_is_valid(
+                        widget.prompt_float:get_files_winid()
+                    )
+                )
+                assert.is_true(
+                    vim.api.nvim_win_is_valid(
+                        widget.prompt_float:get_input_winid()
+                    )
+                )
+
+                local files_pos = vim.api.nvim_win_get_position(
+                    widget.prompt_float:get_files_winid()
+                )
+                local input_pos = vim.api.nvim_win_get_position(
+                    widget.prompt_float:get_input_winid()
+                )
+                local files_config = vim.api.nvim_win_get_config(
+                    widget.prompt_float:get_files_winid()
+                )
+
+                assert.is_true(files_pos[1] < input_pos[1])
+                assert.equal(
+                    files_pos[1] + files_config.height + 2,
+                    input_pos[1]
+                )
+            end
+        )
+    end)
 end)
