@@ -6,6 +6,15 @@ describe("agentic.ui.PromptFloat", function()
     local original_width
     local original_input_height
 
+    --- @param position number|table
+    --- @return number
+    local function unwrap_position(position)
+        if type(position) == "table" then
+            return position[false]
+        end
+        return position
+    end
+
     before_each(function()
         original_width = Config.windows.width
         original_input_height = Config.windows.input.height
@@ -38,8 +47,14 @@ describe("agentic.ui.PromptFloat", function()
 
         local config = vim.api.nvim_win_get_config(input_winid)
 
-        assert.equal(math.floor((vim.o.lines - (6 + 2)) / 2), config.row[false])
-        assert.equal(math.floor((vim.o.columns - 80) / 2), config.col[false])
+        assert.equal(
+            math.floor((vim.o.lines - (6 + 2)) / 2),
+            unwrap_position(config.row)
+        )
+        assert.equal(
+            math.floor((vim.o.columns - 80) / 2),
+            unwrap_position(config.col)
+        )
         assert.equal(80, config.width)
         assert.equal(6, config.height)
 

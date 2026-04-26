@@ -4,6 +4,8 @@ local BufferGuard = require("agentic.ui.buffer_guard")
 local DiffPreview = require("agentic.ui.diff_preview")
 local Logger = require("agentic.utils.logger")
 local PromptFloat = require("agentic.ui.prompt_float")
+local PromptHistory = require("agentic.ui.prompt_history")
+local PromptHistoryFloat = require("agentic.ui.prompt_history_float")
 local WindowDecoration = require("agentic.ui.window_decoration")
 local WidgetLayout = require("agentic.ui.widget_layout")
 
@@ -41,6 +43,7 @@ local WidgetLayout = require("agentic.ui.widget_layout")
 --- @field current_position agentic.UserConfig.Windows.Position
 --- @field on_submit_input fun(prompt: string): boolean external callback to be called when user submits the input
 --- @field prompt_float agentic.ui.PromptFloat
+--- @field prompt_history_float agentic.ui.PromptHistoryFloat
 --- @field _bufwinleave_suppression_counts table<integer, integer>
 --- @field _guard_augroup? integer BufferGuard autocmd group ID
 --- @field _winclosed_augroup? integer WinClosed autocmd group ID
@@ -66,6 +69,12 @@ function ChatWidget:new(tab_page_id, on_submit_input)
     self.prompt_float = PromptFloat:new(tab_page_id, self.buf_nrs, function()
         self:_close_prompt_float()
     end)
+    self.prompt_history_float = PromptHistoryFloat:new(
+        tab_page_id,
+        function(prompt)
+            self:_insert_prompt_from_history(prompt)
+        end
+    )
     self:_bind_events_to_change_headers()
 
     return self
@@ -169,6 +178,7 @@ end
 --- Closes all windows but keeps buffers in memory
 function ChatWidget:hide()
     vim.cmd("stopinsert")
+    self.prompt_history_float:close()
 
     -- Check if we're on the correct tabpage before trying to find/create fallback window
     local current_tabpage = vim.api.nvim_get_current_tabpage()
@@ -240,6 +250,7 @@ function ChatWidget:destroy()
         not vim.tbl_contains(vim.api.nvim_list_tabpages(), self.tab_page_id)
 
     if not tab_closing then
+        self.prompt_history_float:close()
         self.prompt_float:close()
         self:hide()
     end
@@ -280,6 +291,8 @@ function ChatWidget:_submit_input()
     if not accepted then
         return
     end
+
+    PromptHistory.append(prompt)
 
     -- Clear buffers only after successful submission
     vim.api.nvim_buf_set_lines(self.buf_nrs.input, 0, -1, false, {})
@@ -397,6 +410,10 @@ function ChatWidget:show_prompt_float(opts)
     self.prompt_float:open(
         (opts.focus_prompt == nil and true or opts.focus_prompt) == true
     )
+end
+
+function ChatWidget:show_prompt_history()
+    self.prompt_history_float:open()
 end
 
 function ChatWidget:_bind_keymaps()
@@ -687,6 +704,25 @@ function ChatWidget:_close_prompt_float()
     end
 
     self.prompt_float:close()
+end
+
+--- @param prompt string
+function ChatWidget:_insert_prompt_from_history(prompt)
+    local lines = vim.split(prompt, "\n", { plain = true })
+    if #lines == 0 then
+        lines = { "" }
+    end
+
+    BufHelpers.with_modifiable(self.buf_nrs.input, function(bufnr)
+        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+    end)
+
+    if Config.windows.detached_prompt.enabled then
+        self:show_prompt_float({ focus_prompt = true })
+        return
+    end
+
+    self:show({ focus_prompt = true })
 end
 
 --- @param panel_name agentic.ui.ChatWidget.PanelNames

@@ -370,6 +370,12 @@ agentic.open_prompt_float({opts})
   Parameters: ~
     {opts}  (table|nil)  Optional. `focus_prompt` (boolean).
 
+                                         *agentic.open_prompt_history()*
+agentic.open_prompt_history()
+  Open the prompt history floating window for the current working
+  directory. Press <Enter> on an entry to reopen the prompt window
+  and paste the selected prompt back into it.
+
                                                *agentic.add_selection()*
 agentic.add_selection({opts})
   Add the current visual selection to the chat context and open
@@ -689,6 +695,14 @@ loads, that definition is preserved.
   `AgenticCodeBlockFence`    Tool call left border      Links to Directory
   `AgenticTitle`             Window titles              bg=#2787b0 fg=#000000
   `AgenticThinking`          Thinking block text        Links to Comment
+  `AgenticPromptHistoryFooter`
+                            Prompt history footer       bg=FloatBorder.bg
+                                                        fg=Comment.fg
+
+`AgenticPromptHistoryFooter` is created lazily the first time the
+prompt history float opens. It is a regular global highlight group
+for the current Neovim session, so closing the float does not delete
+it.
 
 Spinner highlight groups (not user-overridable in config, but
 can be set via |nvim_set_hl()|):

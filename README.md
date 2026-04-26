@@ -907,9 +907,14 @@ colorscheme.
 | `AgenticCodeBlockFence`  | The left border decoration on tool calls | Links to `Directory`                |
 | `AgenticTitle`           | Window titles in sidebar                 | `bg=#2787b0, fg=#000000, bold=true` |
 | `AgenticThinking`        | Thinking block text in chat buffer       | Links to `Comment`                  |
+| `AgenticPromptHistoryFooter` | Prompt history float footer text     | `bg=FloatBorder.bg, fg=Comment.fg`  |
 
 If any of these highlight exists, Agentic will use it instead of creating new
 ones.
+
+`AgenticPromptHistoryFooter` is created lazily the first time the prompt
+history float opens. It is a regular global highlight group for the current
+Neovim session, so closing the float does not delete it.
 
 ### Customizing Diagnostic Icons
 

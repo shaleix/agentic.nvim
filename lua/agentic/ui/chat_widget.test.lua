@@ -19,6 +19,276 @@ describe("agentic.ui.ChatWidget", function()
         vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, content)
     end
 
+describe("detached prompt float", function()
+        local widget
+        local original_detached_prompt_enabled
+
+        before_each(function()
+            original_detached_prompt_enabled =
+                Config.windows.detached_prompt.enabled
+            Config.windows.detached_prompt.enabled = true
+
+            vim.cmd("tabnew")
+
+            local on_submit_spy = spy.new(function() end)
+            widget = ChatWidget:new(
+                vim.api.nvim_get_current_tabpage(),
+                on_submit_spy --[[@as function]]
+            )
+            widget:show({ focus_prompt = false })
+        end)
+
+        after_each(function()
+            if widget then
+                pcall(function()
+                    widget:destroy()
+                end)
+            end
+            pcall(function()
+                vim.cmd("tabclose")
+            end)
+
+            Config.windows.detached_prompt.enabled =
+                original_detached_prompt_enabled
+        end)
+
+        it(
+            "pressing close in the input float closes the whole float",
+            function()
+                fill_buffer(widget, "files", { "file1.lua", "file2.lua" })
+
+                widget:show_prompt_float({ focus_prompt = false })
+
+                local input_winid = widget.prompt_float:get_input_winid()
+                local files_winid = widget.prompt_float:get_files_winid()
+                assert.is_not_nil(input_winid)
+                assert.is_not_nil(files_winid)
+                assert.is_true(vim.api.nvim_win_is_valid(input_winid))
+                assert.is_true(vim.api.nvim_win_is_valid(files_winid))
+                assert.is_true(widget:is_open())
+
+                vim.api.nvim_set_current_win(input_winid)
+                vim.api.nvim_input("q")
+                vim.wait(100, function()
+                    return not widget.prompt_float:is_open()
+                end)
+
+                assert.is_false(widget.prompt_float:is_open())
+                assert.is_nil(widget.prompt_float:get_files_winid())
+                assert.is_true(widget:is_open())
+                assert.is_true(vim.api.nvim_win_is_valid(widget.win_nrs.chat))
+            end
+        )
+
+        it(
+            "pressing close in the files float closes the whole float",
+            function()
+                fill_buffer(widget, "files", { "file1.lua", "file2.lua" })
+
+                widget:show_prompt_float({ focus_prompt = false })
+
+                local files_winid = widget.prompt_float:get_files_winid()
+                assert.is_not_nil(files_winid)
+                assert.is_true(vim.api.nvim_win_is_valid(files_winid))
+                assert.is_true(
+                    vim.api.nvim_win_is_valid(
+                        widget.prompt_float:get_input_winid()
+                    )
+                )
+
+                vim.api.nvim_set_current_win(files_winid)
+                vim.api.nvim_input("q")
+                vim.wait(100, function()
+                    return not widget.prompt_float:is_open()
+                end)
+
+                assert.is_false(widget.prompt_float:is_open())
+                assert.is_nil(widget.prompt_float:get_files_winid())
+                assert.is_true(widget:is_open())
+                assert.is_true(vim.api.nvim_win_is_valid(widget.win_nrs.chat))
+            end
+        )
+
+        it(
+            "submitting from the float closes it and opens the split widget",
+            function()
+                local widget2
+
+                local on_submit_spy = spy.new(function()
+                    return true
+                end)
+
+                widget2 = ChatWidget:new(
+                    vim.api.nvim_get_current_tabpage(),
+                    on_submit_spy --[[@as function]]
+                )
+
+                fill_buffer(widget2, "files", { "file1.lua", "file2.lua" })
+                vim.api.nvim_buf_set_lines(
+                    widget2.buf_nrs.input,
+                    0,
+                    -1,
+                    false,
+                    { "hello from float" }
+                )
+
+                widget2:show_prompt_float({ focus_prompt = false })
+
+                local input_winid = widget2.prompt_float:get_input_winid()
+                assert.is_not_nil(input_winid)
+                vim.api.nvim_set_current_win(input_winid)
+                vim.api.nvim_input("\r")
+                vim.wait(100, function()
+                    return widget2:is_open()
+                        and not widget2.prompt_float:is_open()
+                end)
+
+                assert.equal(1, on_submit_spy.call_count)
+                assert.is_false(widget2.prompt_float:is_open())
+                assert.is_true(widget2:is_open())
+                assert.is_true(vim.api.nvim_win_is_valid(widget2.win_nrs.chat))
+
+                pcall(function()
+                    widget2:destroy()
+                end)
+            end
+        )
+
+        it("tab switches from input float to files float", function()
+            fill_buffer(widget, "files", { "file1.lua", "file2.lua" })
+
+            widget:show_prompt_float({ focus_prompt = false })
+
+            local input_winid = widget.prompt_float:get_input_winid()
+            local files_winid = widget.prompt_float:get_files_winid()
+
+            assert.is_not_nil(input_winid)
+            assert.is_not_nil(files_winid)
+
+            vim.api.nvim_set_current_win(input_winid)
+            vim.api.nvim_input("<Tab>")
+            vim.wait(100, function()
+                return vim.api.nvim_get_current_win() == files_winid
+            end)
+
+            assert.equal(files_winid, vim.api.nvim_get_current_win())
+        end)
+
+        it("tab switches from files float to input float", function()
+            fill_buffer(widget, "files", { "file1.lua", "file2.lua" })
+
+            widget:show_prompt_float({ focus_prompt = false })
+
+            local input_winid = widget.prompt_float:get_input_winid()
+            local files_winid = widget.prompt_float:get_files_winid()
+
+            assert.is_not_nil(input_winid)
+            assert.is_not_nil(files_winid)
+
+            vim.api.nvim_set_current_win(files_winid)
+            vim.api.nvim_input("<Tab>")
+            vim.wait(100, function()
+                return vim.api.nvim_get_current_win() == input_winid
+            end)
+
+            assert.equal(input_winid, vim.api.nvim_get_current_win())
+        end)
+    end)
+
+    describe("prompt history", function()
+        local PromptHistory
+        local widget
+        local original_detached_prompt_enabled
+        local original_cwd
+        local temp_dir
+
+        before_each(function()
+            PromptHistory = require("agentic.ui.prompt_history")
+            original_detached_prompt_enabled =
+                Config.windows.detached_prompt.enabled
+            Config.windows.detached_prompt.enabled = true
+            original_cwd = vim.fn.getcwd()
+            temp_dir = vim.fn.tempname()
+            vim.fn.mkdir(temp_dir, "p")
+
+            vim.cmd("tabnew")
+            vim.cmd.cd(temp_dir)
+
+            local on_submit_spy = spy.new(function()
+                return true
+            end)
+            widget = ChatWidget:new(
+                vim.api.nvim_get_current_tabpage(),
+                on_submit_spy --[[@as function]]
+            )
+        end)
+
+        after_each(function()
+            if widget then
+                pcall(function()
+                    widget:destroy()
+                end)
+            end
+            if original_cwd then
+                vim.cmd.cd(original_cwd)
+            end
+            pcall(function()
+                vim.cmd("tabclose")
+            end)
+            if temp_dir then
+                vim.fn.delete(temp_dir, "rf")
+            end
+
+            Config.windows.detached_prompt.enabled =
+                original_detached_prompt_enabled
+        end)
+
+        it("stores the submitted prompt content in history json", function()
+            vim.api.nvim_buf_set_lines(
+                widget.buf_nrs.input,
+                0,
+                -1,
+                false,
+                { "hello", "history" }
+            )
+
+            widget:_submit_input()
+
+            local prompts = PromptHistory.read(temp_dir)
+            assert.equal(1, #prompts)
+            assert.equal("hello\nhistory", prompts[1])
+        end)
+
+        it(
+            "pressing enter in prompt history opens prompt float and pastes the selection",
+            function()
+                assert.is_true(PromptHistory.append("first prompt", temp_dir))
+                assert.is_true(
+                    PromptHistory.append("selected\nhistory entry", temp_dir)
+                )
+
+                widget:show_prompt_history()
+
+                local history_winid = widget.prompt_history_float:get_winid()
+                assert.is_not_nil(history_winid)
+
+                vim.api.nvim_set_current_win(history_winid)
+                widget.prompt_history_float:_select_current_entry()
+                assert.is_true(widget.prompt_float:is_open())
+
+                local prompt_lines = vim.api.nvim_buf_get_lines(
+                    widget.buf_nrs.input,
+                    0,
+                    -1,
+                    false
+                )
+
+                assert.equal(2, #prompt_lines)
+                assert.equal("selected", prompt_lines[1])
+                assert.equal("history entry", prompt_lines[2])
+            end
+        )
+    end)
     -- Tests that behave identically regardless of layout position
     for _, position in ipairs({ "right", "left", "bottom" }) do
         -- Bottom layout uses 2 to avoid touching the screen edge
@@ -28,10 +298,14 @@ describe("agentic.ui.ChatWidget", function()
             local tab_page_id
             local widget
             local original_position
+            local original_detached_prompt_enabled
 
             before_each(function()
                 original_position = Config.windows.position
+                original_detached_prompt_enabled =
+                    Config.windows.detached_prompt.enabled
                 Config.windows.position = position
+                Config.windows.detached_prompt.enabled = false
 
                 vim.cmd("tabnew")
                 tab_page_id = vim.api.nvim_get_current_tabpage()
@@ -54,6 +328,8 @@ describe("agentic.ui.ChatWidget", function()
                 end)
 
                 Config.windows.position = original_position
+                Config.windows.detached_prompt.enabled =
+                    original_detached_prompt_enabled
             end)
 
             it("creates widget with valid buffer IDs", function()
@@ -206,13 +482,16 @@ describe("agentic.ui.ChatWidget", function()
                     widget:show()
 
                     local chat_win = widget.win_nrs.chat
+                    local original_swapfile = vim.o.swapfile
 
                     vim.api.nvim_set_current_win(chat_win)
 
                     local tmpfile = vim.fn.tempname() .. ".lua"
                     vim.fn.writefile({ "-- test" }, tmpfile)
 
+                    vim.o.swapfile = false
                     vim.cmd("edit " .. vim.fn.fnameescape(tmpfile))
+                    vim.o.swapfile = original_swapfile
 
                     -- Chat window does not contain the temp file
                     -- (guard either restored chat_buf or replaced it with a
@@ -566,10 +845,14 @@ describe("agentic.ui.ChatWidget", function()
         describe(string.format("(%s layout) specific", side), function()
             local widget
             local original_position
+            local original_detached_prompt_enabled
 
             before_each(function()
                 original_position = Config.windows.position
+                original_detached_prompt_enabled =
+                    Config.windows.detached_prompt.enabled
                 Config.windows.position = side
+                Config.windows.detached_prompt.enabled = false
 
                 vim.cmd("tabnew")
 
@@ -591,6 +874,8 @@ describe("agentic.ui.ChatWidget", function()
                 end)
 
                 Config.windows.position = original_position
+                Config.windows.detached_prompt.enabled =
+                    original_detached_prompt_enabled
             end)
 
             it("input splits below chat", function()
@@ -620,10 +905,14 @@ describe("agentic.ui.ChatWidget", function()
     describe("(bottom layout) specific", function()
         local widget
         local original_position
+        local original_detached_prompt_enabled
 
         before_each(function()
             original_position = Config.windows.position
+            original_detached_prompt_enabled =
+                Config.windows.detached_prompt.enabled
             Config.windows.position = "bottom"
+            Config.windows.detached_prompt.enabled = false
 
             vim.cmd("tabnew")
 
@@ -645,6 +934,8 @@ describe("agentic.ui.ChatWidget", function()
             end)
 
             Config.windows.position = original_position
+            Config.windows.detached_prompt.enabled =
+                original_detached_prompt_enabled
         end)
 
         it("input splits right of chat", function()
@@ -815,5 +1106,109 @@ describe("agentic.ui.ChatWidget", function()
             assert.equal("left", widget.current_position)
             assert.equal("bottom", widget2.current_position)
         end)
+    end)
+
+    describe("detached prompt float", function()
+        local widget
+        local original_position
+        local original_detached
+
+        before_each(function()
+            original_position = Config.windows.position
+            original_detached = Config.windows.detached_prompt.enabled
+            Config.windows.position = "right"
+            Config.windows.detached_prompt.enabled = true
+
+            vim.cmd("tabnew")
+
+            local on_submit_spy = spy.new(function() end)
+            widget = ChatWidget:new(
+                vim.api.nvim_get_current_tabpage(),
+                on_submit_spy --[[@as function]]
+            )
+        end)
+
+        after_each(function()
+            if widget then
+                pcall(function()
+                    widget:destroy()
+                end)
+            end
+            pcall(function()
+                vim.cmd("tabclose")
+            end)
+
+            Config.windows.position = original_position
+            Config.windows.detached_prompt.enabled = original_detached
+        end)
+
+        it("show() hides prompt and files from the split layout", function()
+            widget:show()
+
+            assert.is_true(vim.api.nvim_win_is_valid(widget.win_nrs.chat))
+            assert.is_nil(widget.win_nrs.input)
+            assert.is_nil(widget.win_nrs.files)
+            assert.is_nil(widget.prompt_float:get_input_winid())
+        end)
+
+        it(
+            "show_prompt_float opens an independent detached prompt float",
+            function()
+                widget:show({ focus_prompt = false })
+                widget:show_prompt_float({ focus_prompt = false })
+
+                assert.is_true(vim.api.nvim_win_is_valid(widget.win_nrs.chat))
+                assert.is_nil(widget.win_nrs.input)
+                assert.is_true(
+                    vim.api.nvim_win_is_valid(
+                        widget.prompt_float:get_input_winid()
+                    )
+                )
+                assert.equal(
+                    "editor",
+                    vim.api.nvim_win_get_config(
+                        widget.prompt_float:get_input_winid()
+                    ).relative
+                )
+            end
+        )
+
+        it(
+            "shows referenced files above the detached prompt float when populated",
+            function()
+                fill_buffer(widget, "files", { "file1.lua", "file2.lua" })
+
+                assert.has_no_errors(function()
+                    widget:show_prompt_float({ focus_prompt = false })
+                end)
+
+                assert.is_true(
+                    vim.api.nvim_win_is_valid(
+                        widget.prompt_float:get_files_winid()
+                    )
+                )
+                assert.is_true(
+                    vim.api.nvim_win_is_valid(
+                        widget.prompt_float:get_input_winid()
+                    )
+                )
+
+                local files_pos = vim.api.nvim_win_get_position(
+                    widget.prompt_float:get_files_winid()
+                )
+                local input_pos = vim.api.nvim_win_get_position(
+                    widget.prompt_float:get_input_winid()
+                )
+                local files_config = vim.api.nvim_win_get_config(
+                    widget.prompt_float:get_files_winid()
+                )
+
+                assert.is_true(files_pos[1] < input_pos[1])
+                assert.equal(
+                    files_pos[1] + files_config.height + 2,
+                    input_pos[1]
+                )
+            end
+        )
     end)
 end)
