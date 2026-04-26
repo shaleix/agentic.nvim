@@ -355,56 +355,12 @@ by configuring the `acp_providers` property:
   (e.g., `"bypassPermissions"`, `"plan"`)
 - `initial_model` (string, optional) - Default model ID to set on session
   creation (e.g., `"haiku"`)
+- `default_thought_level` (string, optional) - Default thought effort level to
+  apply on session creation (e.g., `"high"`, `"max"` for Claude)
 
 > [!NOTE]  
 > Customizing a provider only requires specifying the fields you want to
 > override, not the entire configuration.
-
-#### Setting a Default Agent Mode
-
-If you prefer a specific agent mode other than the provider's default, you can
-configure it per provider:
-
-```lua
-{
-  "carlos-algms/agentic.nvim",
-  --- @type agentic.PartialUserConfig
-  opts = {
-    acp_providers = {
-      ["claude-agent-acp"] = {
-        -- Automatically switch to this mode when a new session starts
-        default_mode = "bypassPermissions",
-      },
-    },
-  },
-}
-```
-
-The mode will only be set if it's available from the provider. Use `<S-Tab>` to
-see available modes for your provider.
-
-#### Setting an Initial Model
-
-If you want to start sessions with a specific model instead of the provider's
-default:
-
-```lua
-{
-  "carlos-algms/agentic.nvim",
-  --- @type agentic.PartialUserConfig
-  opts = {
-    acp_providers = {
-      ["claude-agent-acp"] = {
-        -- Automatically switch to this model when a new session starts
-        initial_model = "haiku",
-      },
-    },
-  },
-}
-```
-
-The model will only be set if it's available from the provider. Use
-`<localLeader>m` to see available models for your provider.
 
 ### Window Layout
 
@@ -619,6 +575,7 @@ These keybindings are automatically set in Agentic buffers:
 | `<C-v>`          | i     | Paste image from clipboard (same as Claude-code)                |
 | `<localLeader>s` | n     | Switch ACP provider (preserves chat history)                    |
 | `<localLeader>m` | n     | Switch model without (preserves chat history)                   |
+| `<localLeader>t` | n     | Select thought effort level (model-dependent on Claude)         |
 | `q`              | n     | Close chat widget                                               |
 | `d`              | n     | Remove file, code selection, or diagnostic at cursor            |
 | `d`              | v     | Remove multiple selected files, code selections, or diagnostics |
@@ -647,6 +604,7 @@ your setup:
         },
         switch_provider = "<localLeader>s",  -- Switch ACP provider
         switch_model = "<localLeader>m",     -- Switch model
+        change_thought_level = "<localLeader>t",  -- Select thought effort level
       },
 
       -- Keybindings for the prompt buffer only
