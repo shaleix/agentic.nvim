@@ -74,6 +74,21 @@ local function calculate_dynamic_height(bufnr, max_height, position)
     return math.min(line_count + padding, max_height)
 end
 
+--- @type table<string, any>
+local PANEL_WINDOW_OPTS = {
+    number = false,
+    relativenumber = false,
+    cursorcolumn = false,
+    foldcolumn = "0",
+    spell = false,
+    list = false,
+    signcolumn = "no",
+    colorcolumn = "",
+    statuscolumn = "",
+    fillchars = "eob: ,fold: ",
+    winhighlight = "EndOfBuffer:",
+}
+
 --- @param bufnr integer
 --- @param enter boolean
 --- @param opts vim.api.keyset.win_config
@@ -86,7 +101,6 @@ local function open_win(bufnr, enter, opts, window_name, win_opts)
         split = "right",
         win = -1,
         noautocmd = true,
-        style = "minimal",
     }
 
     local config = vim.tbl_deep_extend("force", default_opts, opts)
@@ -103,7 +117,7 @@ local function open_win(bufnr, enter, opts, window_name, win_opts)
         wrap = true,
         linebreak = true,
         winfixheight = true,
-    }, win_opts or {}, config_win_opts)
+    }, PANEL_WINDOW_OPTS, win_opts or {}, config_win_opts)
 
     for name, value in pairs(merged_win_opts) do
         vim.api.nvim_set_option_value(name, value, { win = winid })
@@ -268,6 +282,38 @@ local function show_layout(params, position)
             end
         end)
     end
+end
+
+--- @param bufnr integer Chat buffer
+--- @return integer|nil winid nil on failure (graceful degradation)
+function WidgetLayout.open_hidden_chat_window(bufnr)
+    local ok, winid = pcall(vim.api.nvim_open_win, bufnr, false, {
+        relative = "editor",
+        row = 0,
+        col = 0,
+        width = 80,
+        height = 20,
+        hide = true,
+        focusable = false,
+        noautocmd = true,
+    })
+
+    if not ok or type(winid) ~= "number" then
+        Logger.debug("open_hidden_chat_window failed: " .. tostring(winid))
+        return nil
+    end
+
+    vim.wo[winid].winbar = ""
+
+    vim.w[winid].agentic_bufnr = bufnr
+
+    for name, value in pairs(PANEL_WINDOW_OPTS) do
+        vim.api.nvim_set_option_value(name, value, { win = winid })
+    end
+
+    Fold.setup_window(winid, bufnr)
+
+    return winid
 end
 
 --- @param params agentic.ui.WidgetLayout.Params
