@@ -2,6 +2,7 @@ local Config = require("agentic.config")
 local DefaultConfig = require("agentic.config_default")
 local BufHelpers = require("agentic.utils.buf_helpers")
 local Fold = require("agentic.ui.tool_call_fold")
+local ToolBlockBorder = require("agentic.ui.tool_block_border")
 local WindowDecoration = require("agentic.ui.window_decoration")
 local Logger = require("agentic.utils.logger")
 
@@ -74,10 +75,19 @@ local function calculate_dynamic_height(bufnr, max_height, position)
     return math.min(line_count + padding, max_height)
 end
 
+-- Make the gutter (where statuscolumn renders) blend into the chat
+-- background regardless of colorscheme. Each themable column highlight
+-- group is mapped to Normal.
+local CHAT_GUTTER_WINHIGHLIGHT = "EndOfBuffer:"
+    .. ",LineNr:Normal,CursorLineNr:Normal"
+    .. ",SignColumn:Normal,CursorLineSign:Normal"
+    .. ",FoldColumn:Normal,CursorLineFold:Normal"
+
 --- @type table<string, any>
 local PANEL_WINDOW_OPTS = {
     number = false,
     relativenumber = false,
+    cursorline = false,
     cursorcolumn = false,
     foldcolumn = "0",
     spell = false,
@@ -216,6 +226,8 @@ local function show_layout(params, position)
 
     get_or_create_window(win_nrs, "chat", buf_nrs.chat, chat_opts, {
         scrolloff = 4,
+        statuscolumn = ToolBlockBorder.STATUSCOLUMN_EXPR,
+        winhighlight = CHAT_GUTTER_WINHIGHLIGHT,
         winfixheight = is_bottom,
         winfixwidth = not is_bottom,
     })
