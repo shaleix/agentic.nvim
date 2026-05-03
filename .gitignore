@@ -34,3 +34,5 @@ deps/
 # Git worktrees
 .worktrees/
 
+# ai tools
+.opencode/

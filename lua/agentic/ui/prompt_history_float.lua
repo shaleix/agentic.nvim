@@ -2,8 +2,7 @@ local BufHelpers = require("agentic.utils.buf_helpers")
 local Logger = require("agentic.utils.logger")
 local PromptHistory = require("agentic.ui.prompt_history")
 
-local MAX_HEIGHT = 12
-local MIN_HEIGHT = 6
+local HEIGHT_RATIO = 0.6
 local FOOTER_HL = "AgenticPromptHistoryFooter"
 
 --- @class agentic.ui.PromptHistoryFloat.Entry
@@ -134,12 +133,17 @@ function PromptHistoryFloat:open()
 
     for index = #prompts, 1, -1 do
         local prompt = prompts[index]
-        local display = PromptHistory.to_display_line(prompt, width - 4)
+        local display_index = #prompts - index + 1
+        local number_prefix = display_index .. ". "
+        local prefix_width = vim.fn.strdisplaywidth(number_prefix)
+        local display =
+            PromptHistory.to_display_line(prompt, width - 4 - prefix_width)
+        local full_display = number_prefix .. display
         table.insert(self._entries, {
             prompt = prompt,
-            display = display,
+            display = full_display,
         })
-        table.insert(display_lines, display)
+        table.insert(display_lines, full_display)
     end
 
     self:_render_buffer(display_lines)
@@ -149,7 +153,7 @@ function PromptHistoryFloat:open()
         return
     end
 
-    local height = math.min(math.max(#display_lines, MIN_HEIGHT), MAX_HEIGHT)
+    local height = math.floor(vim.o.lines * HEIGHT_RATIO)
     local row = math.max(0, math.floor((vim.o.lines - (height + 2)) / 2))
     local col = math.max(0, math.floor((vim.o.columns - width) / 2))
 

@@ -19,7 +19,7 @@ describe("agentic.ui.ChatWidget", function()
         vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, content)
     end
 
-describe("detached prompt float", function()
+    describe("detached prompt float", function()
         local widget
         local original_detached_prompt_enabled
 
