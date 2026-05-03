@@ -29,7 +29,7 @@ describe("agentic.ui.PromptHistoryFloat", function()
     end)
 
     it(
-        "uses a minimum height and footer colors from float border and comment",
+        "uses a ratio-based height and footer colors from float border and comment",
         function()
             assert.is_true(PromptHistory.append("only one prompt", temp_dir))
 
@@ -51,7 +51,8 @@ describe("agentic.ui.PromptHistoryFloat", function()
             local border_hl = vim.api.nvim_get_hl(0, { name = "FloatBorder" })
             local comment_hl = vim.api.nvim_get_hl(0, { name = "Comment" })
 
-            assert.equal(6, config.height)
+            local expected_height = math.floor(vim.o.lines * 0.6)
+            assert.equal(expected_height, config.height)
             assert.truthy(
                 winhighlight:match("FloatFooter:AgenticPromptHistoryFooter")
             )
