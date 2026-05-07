@@ -1188,9 +1188,24 @@ end
 
 --- @param buf integer|string|nil Buffer number or path, if nil the current buffer is used or `0`
 function SessionManager:add_file_to_session(buf)
-    local bufnr = buf and vim.fn.bufnr(buf) or 0
-    local buf_path = vim.api.nvim_buf_get_name(bufnr)
+    local bufnr
+    local buf_path
 
+    if buf == nil then
+        buf_path = vim.api.nvim_buf_get_name(0)
+    elseif type(buf) == "number" then
+        bufnr = vim.fn.bufnr(buf)
+        buf_path = vim.api.nvim_buf_get_name(bufnr)
+    else
+        bufnr = vim.fn.bufnr(buf)
+        if bufnr ~= -1 then
+            buf_path = vim.api.nvim_buf_get_name(bufnr)
+        else
+            buf_path = buf
+        end
+    end
+
+    --- @diagnostic disable-next-line: param-type-mismatch
     return self.file_list:add(buf_path)
 end
 

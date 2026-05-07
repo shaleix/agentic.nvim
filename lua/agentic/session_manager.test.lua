@@ -1552,4 +1552,79 @@ describe("agentic.SessionManager", function()
             end
         )
     end)
+
+    describe("add_file_to_session", function()
+        --- @type TestSpy
+        local add_spy
+        --- @type integer
+        local test_bufnr
+        --- @type agentic.SessionManager
+        local session
+        local original_buf
+
+        before_each(function()
+            add_spy = spy.new(function() end)
+            test_bufnr = vim.api.nvim_create_buf(false, true)
+            vim.api.nvim_buf_set_name(
+                test_bufnr,
+                "/tmp/agentic-test-add-file.lua"
+            )
+            original_buf = vim.api.nvim_get_current_buf()
+
+            session = {
+                file_list = {
+                    add = function(_self, file_path)
+                        add_spy(file_path)
+                        return true
+                    end,
+                },
+                add_file_to_session = SessionManager.add_file_to_session,
+            } --[[@as agentic.SessionManager]]
+        end)
+
+        after_each(function()
+            if test_bufnr and vim.api.nvim_buf_is_valid(test_bufnr) then
+                vim.api.nvim_buf_delete(test_bufnr, { force = true })
+            end
+        end)
+
+        it("uses current buffer path when called with nil", function()
+            vim.api.nvim_set_current_buf(test_bufnr)
+            session:add_file_to_session(nil)
+
+            assert
+                .spy(add_spy).was
+                .called_with("/tmp/agentic-test-add-file.lua")
+
+            vim.api.nvim_set_current_buf(original_buf)
+        end)
+
+        it("resolves buffer number to its file path", function()
+            session:add_file_to_session(test_bufnr)
+
+            assert
+                .spy(add_spy).was
+                .called_with("/tmp/agentic-test-add-file.lua")
+        end)
+
+        it(
+            "uses string directly as path when no matching buffer exists",
+            function()
+                session:add_file_to_session("src/nonexistent/foo.lua")
+
+                assert.spy(add_spy).was.called_with("src/nonexistent/foo.lua")
+            end
+        )
+
+        it(
+            "resolves string to buffer path when matching buffer exists",
+            function()
+                session:add_file_to_session("/tmp/agentic-test-add-file.lua")
+
+                assert
+                    .spy(add_spy).was
+                    .called_with("/tmp/agentic-test-add-file.lua")
+            end
+        )
+    end)
 end)
